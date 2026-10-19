@@ -28,14 +28,22 @@ composer → any-deepseek / deepseek-v4.1-flash
 ## Install
 
 ```bash
-dsh plugin add dsh-any-deepseek --profile web
+dsh plugin --profile web add dsh-any-deepseek
 ```
 
-Then restart DSH and open **Settings → any-deepseek**.
+Then restart DSH and open **Settings → Any DeepSeek**.
+
+> **Restart is required for a first install** — the profile's layer list changed, and the
+> composing graph is built at boot. Editing an already-installed plugin's client half reloads
+> in the browser without a restart; its node half does not.
+>
+> `dsh plugin` forwards its arguments to pnpm, so `add <spec>` accepts a registry name, a
+> tarball path, or a local directory (which installs as a symlink).
 
 ## Configuration
 
-Everything lives under the `dsh-any-deepseek` settings namespace:
+Everything lives under the `dsh-any-deepseek` settings namespace — that is the **profile entry
+id** from `cordis.patch.yml`, and it is what the panel binds to:
 
 ```yaml
 dsh-any-deepseek:
@@ -51,10 +59,12 @@ dsh-any-deepseek:
     enabled: true
 ```
 
-`channels[][]` may be either:
+`channels.<id>` may be either:
 
 - **preset-backed** — `preset: opencode-go` plus optional overrides; or
-- **fully declared** — `api` / `baseURL` / `model` / `contextWindow` / `maxTokens` present.
+- **fully declared** — `baseURL` + `model` are required; `api` defaults to
+  `openai-completions`, and `contextWindow` / `maxTokens` fall back to documented defaults
+  (the panel shows a warning next to the row when a default was applied rather than declared).
 
 ### Channels vs. protocols
 
