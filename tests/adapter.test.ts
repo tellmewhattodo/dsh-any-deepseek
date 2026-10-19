@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai'
 import {
+  AnyDeepSeekAdapter,
+  PROVIDER_ID,
   buildPiModel,
   classifyFailure,
   toStreamChunks,
   toTokenUsage,
   type AdapterDeps,
 } from '../src/adapter.js'
+import { ADVERTISED_MODEL_ID } from '../src/presets.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import type { LedgerEntry } from '../src/usage-ledger.js'
 
@@ -204,6 +207,45 @@ describe('toStreamChunks', () => {
     ])
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'STREAM_CLOSED' } } })
     expect(outcome).toMatchObject({ ok: false, code: 'STREAM_CLOSED' })
+  })
+})
+
+describe('listModels — the provider catalog', () => {
+  const adapterWith = (overrides: Partial<AdapterDeps> = {}): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
+    channels: () => [channel()],
+    current: () => 'go',
+    resolveKey: async () => 'sk-test',
+    record: async () => undefined,
+    now: () => new Date(0),
+    elapsed: () => 0,
+    ...overrides,
+  })
+
+  it('advertises exactly one model under the any-deepseek provider', async () => {
+    const models = await adapterWith().listModels(PROVIDER_ID)
+    expect(models).toHaveLength(1)
+    expect(models[0]).toMatchObject({ provider: PROVIDER_ID, id: ADVERTISED_MODEL_ID })
+  })
+
+  it('🔴 keeps the model visible when the channel has NO key', async () => {
+    // This is the regression that made the provider look "not installed": the catalog came back
+    // empty whenever no key resolved, so the model picker showed nothing even though the adapter
+    // was registered. Credentials must not decide identity.
+    const models = await adapterWith({ resolveKey: async () => undefined }).listModels(PROVIDER_ID)
+    expect(models).toHaveLength(1)
+    expect(models[0]?.id).toBe(ADVERTISED_MODEL_ID)
+  })
+
+  it('🔴 keeps the model visible when NO channel is configured at all', async () => {
+    const models = await adapterWith({ channels: () => [], current: () => undefined }).listModels(PROVIDER_ID)
+    expect(models).toHaveLength(1)
+    // No channel ⇒ say so rather than inventing a relay name.
+    expect(models[0]?.description).toContain('no channel')
+  })
+
+  it('names the selected channel when there is one', async () => {
+    const models = await adapterWith().listModels(PROVIDER_ID)
+    expect(models[0]?.description).toContain('OpenCode Go')
   })
 })
 

@@ -445,28 +445,34 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
   }
 
   /**
-   * Advertise exactly one model.
+   * Advertise exactly one model — **unconditionally**.
    *
-   * A relay that is missing a key still gets no catalog entry — the picker then hides the whole
-   * group, which is the harness's own convention for a dormant provider — but the settings page
-   * keeps its entry, so the user can go fix it.
+   * 🔴 **This used to require a resolvable key, and that was wrong.**
+   *
+   * The old rule was "a relay with no key gets no catalog entry; the picker then hides the whole
+   * group, which is the harness's convention for a dormant provider." That reasoning leaks the
+   * provider's *credentials* into its *identity*: the provider disappeared from the model picker
+   * exactly when the user most needed to see it — during first-run setup, before any key exists.
+   * Measured on a real host (owner report, 2026-10-19): with the only channel disabled, the
+   * catalog came back `[]`, so `any-deepseek` was registered but *invisible*, which reads as
+   * "the plugin did not install" no matter what the schema or the routes say.
+   *
+   * ⇒ The catalog answers "what does this provider serve", which is a property of the plugin.
+   * Key presence is answered per request (`MISSING_CREDENTIAL`) and per row in the panel
+   * (`keyConfigured`), where the user can actually act on it.
    */
   override async listModels(_provider: string): Promise<LlmModelInfo[]> {
-    const channels = this.deps.channels()
-    const withKey: LlmModelInfo[] = []
-    for (const channel of channels) {
-      const key = await this.deps.resolveKey(channel.apiKeyEnv)
-      if (key !== undefined && key !== '') {
-        withKey.push({
-          provider: PROVIDER_ID,
-          id: ADVERTISED_MODEL_ID,
-          name: ADVERTISED_MODEL_NAME,
-          description: `via ${channel.label}`,
-        })
-        break
-      }
-    }
-    return withKey
+    const selected = this.selected()
+    const first = this.deps.channels()[0]
+    const label = selected?.label ?? first?.label
+    return [{
+      provider: PROVIDER_ID,
+      id: ADVERTISED_MODEL_ID,
+      name: ADVERTISED_MODEL_NAME,
+      // Naming the route is useful when one exists; with no channel configured the honest
+      // description says so instead of inventing a relay.
+      description: label === undefined ? 'no channel configured yet' : `via ${label}`,
+    }]
   }
 
   override async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {

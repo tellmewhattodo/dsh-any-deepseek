@@ -102,9 +102,21 @@ function fakeContext(
   return { ctx, spy }
 }
 
-/** A parsed configuration with one keyed channel. */
-function config(overrides: Partial<PluginConfigValue> = {}): PluginConfigValue {
+/** Minimal harness request for the stream path (the only place a key is read). */
+function request(): {
+  provider: string
+  model: string
+  messages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string }> }>
+} {
   return {
+    provider: PROVIDER_ID,
+    model: ADVERTISED_MODEL_ID,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+  }
+}
+
+/** A parsed configuration with one keyed channel. */
+function config(overrides: Partial<PluginConfigValue> = {}): PluginConfigValue {  return {
     channels: {
       go: {
         label: 'OpenCode Go',
@@ -217,12 +229,18 @@ describe('credential seam', () => {
     expect(spy.credentialRefs).toHaveLength(0)
   })
 
-  it('consults the seam by reference (never by value) when the adapter asks', async () => {
+  it('consults the seam by reference (never by value) when a request needs the key', async () => {
     const { ctx, spy } = fakeContext({ keyValue: 'sk-from-seam' })
-    apply(ctx, config())
+    // 🔴 `usage.enabled: false` is not cosmetic here: driving `stream()` makes the adapter
+    // record a ledger entry, and the default ledger directory is the REAL `~/.dsh/any-deepseek`.
+    // Without this, running the suite appends junk rows to the user's actual usage book — which
+    // then breaks the `/stats` tests in `http.test.ts` (measured: they expect an empty ledger).
+    apply(ctx, config({ usage: { enabled: false } }))
 
-    const adapter = spy.adapters[0]?.adapter as { listModels: (p: string) => Promise<unknown[]> }
-    await adapter.listModels(PROVIDER_ID)
+    // The catalog no longer reads credentials (it must stay visible without a key), so the
+    // seam is exercised through the path that genuinely needs a key: one request.
+    const adapter = spy.adapters[0]?.adapter as { stream: (o: unknown) => AsyncIterable<unknown> }
+    for await (const chunk of adapter.stream(request())) void chunk
 
     // The reference is the channel's apiKeyEnv; the value never enters the argument.
     expect(spy.credentialRefs).toEqual(['GO_KEY'])
@@ -232,11 +250,21 @@ describe('credential seam', () => {
     process.env.ANY_DEEPSEEK_TEST_KEY = 'sk-from-env'
     try {
       const { ctx, spy } = fakeContext({ services: ['llm'], keyValue: undefined })
-      apply(ctx, config({ channels: { go: { apiKeyEnv: 'ANY_DEEPSEEK_TEST_KEY', model: 'm', baseURL: 'https://x/v1' } } } as never))
-      const adapter = spy.adapters[0]?.adapter as { listModels: (p: string) => Promise<unknown[]> }
+      apply(ctx, config({
+        channels: { go: { apiKeyEnv: 'ANY_DEEPSEEK_TEST_KEY', model: 'm', baseURL: 'https://x/v1' } },
+        usage: { enabled: false },
+      } as never))
+      const adapter = spy.adapters[0]?.adapter as { stream: (o: unknown) => AsyncIterable<unknown> }
+      const chunks: unknown[] = []
+      for await (const chunk of adapter.stream(request())) chunks.push(chunk)
       // Reading the environment is the keyless-deployment path (container `-e`); it must not
-      // require the credentials package to be composed.
-      expect(await adapter.listModels(PROVIDER_ID)).toHaveLength(1)
+      // require the credentials package to be composed. Reaching the transport (rather than a
+      // MISSING_CREDENTIAL failure) is what proves the env fallback fired.
+      const codes = chunks.flatMap((chunk) => {
+        const reason = (chunk as { reason?: { failure?: { code?: string } } }).reason
+        return reason?.failure?.code === undefined ? [] : [reason.failure.code]
+      })
+      expect(codes).not.toContain('MISSING_CREDENTIAL')
     } finally {
       delete process.env.ANY_DEEPSEEK_TEST_KEY
     }
@@ -281,7 +309,7 @@ describe('ledger directory', () => {
 })
 
 describe('model catalogue', () => {
-  it('advertises the single model once a key resolves', async () => {
+  it('advertises the single model', async () => {
     const { ctx, spy } = fakeContext({ keyValue: 'sk-live', describe: { configured: true } })
     apply(ctx, config())
 
@@ -292,11 +320,19 @@ describe('model catalogue', () => {
     expect(models[0]).toMatchObject({ id: ADVERTISED_MODEL_ID })
   })
 
-  it('hides the model when no channel has a key (the harness dormant-provider convention)', async () => {
+  it('🔴 STILL advertises the model when no channel has a key', async () => {
+    // Reversed deliberately (owner report, 2026-10-19). The provider used to vanish from the
+    // catalog whenever no key resolved, which made "installed but unconfigured" indistinguishable
+    // from "not installed" — visible exactly when the user is trying to set it up.
+    // Key presence is reported per request (MISSING_CREDENTIAL) and per panel row
+    // (keyConfigured), where the user can act on it. The catalog answers a different question:
+    // what does this provider serve.
     const { ctx, spy } = fakeContext({ keyValue: undefined, describe: { configured: false } })
     apply(ctx, config())
 
     const adapter = spy.adapters[0]?.adapter as { listModels: (p: string) => Promise<unknown[]> }
-    expect(await adapter.listModels(PROVIDER_ID)).toEqual([])
+    const models = await adapter.listModels(PROVIDER_ID)
+    expect(models).toHaveLength(1)
+    expect(models[0]).toMatchObject({ id: ADVERTISED_MODEL_ID })
   })
 })
