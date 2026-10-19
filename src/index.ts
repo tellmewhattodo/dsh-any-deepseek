@@ -19,7 +19,7 @@
 import type { Context } from 'cordis'
 import { join } from 'node:path'
 
-import { PluginConfigSchema, unwrapChannels, type PluginConfigValue } from './config.js'
+import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } from './config.js'
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { enabledChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME } from './adapter.js'
@@ -152,7 +152,11 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
 
   const current = () => {
     const live = (ctx as unknown as { fiber?: { config?: PluginConfigValue } }).fiber?.config ?? config
-    return typeof live.current === 'string' ? live.current : undefined
+    // `current` is volatile (the panel writes it), so the runtime value is a reference wrapper.
+    // Reading it directly would yield an always-truthy object, which selects nothing and reports
+    // no error — the exact class of silent failure this plugin keeps finding.
+    const value = unwrap(live.current)
+    return typeof value === 'string' ? value : undefined
   }
 
   const deps = {

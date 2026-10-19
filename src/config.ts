@@ -130,12 +130,15 @@ export interface PluginConfigInput {
 /**
  * Plugin configuration as the plugin reads it (schema OUTPUT).
  *
- * `channels` parses to a reference wrapper — created even when the user set nothing, so the
- * field is always present. Read it through {@link unwrapChannels}.
+ * `channels` and `current` parse to reference wrappers — created even when the user set
+ * nothing, so the fields are always present. Read them through {@link unwrap}.
+ *
+ * 🔴 **`current` is volatile too, and that is not cosmetic** — see the `.volatile()` note on
+ * `PluginConfigSchema`.
  */
 export interface PluginConfigValue {
   channels: Volatile<Record<string, ChannelConfigValue>>
-  current: string
+  current: Volatile<string>
   usage: UsageConfigValue
   fallback: string[]
 }
@@ -143,12 +146,28 @@ export interface PluginConfigValue {
 /**
  * Plugin configuration schema.
  *
- * `channels` is volatile: the panel can only render and edit a field the harness sees as a
- * reference, and the runtime value arrives as a wrapper whose `.get()` returns the document.
+ * ## Why EVERY panel-writable field must be `.volatile()`
+ *
+ * The host projects an entry's Config into a settings form only for volatile fields, and its
+ * write path **refuses** any path outside one:
+ *
+ * ```js
+ * for (const path of paths) if (path.length && !isVolatilePath(schema, path))
+ *   throw new Error(`Config field "${path.join('.')}" is not volatile`)
+ * ```
+ *
+ * `channels` was volatile from the start, so channel edits worked. `current` was **not**, so
+ * every click on "设为当前" was rejected by the host — and the host's client-side form turns
+ * that refusal into a bare `false`, which the panel reported as "read-only deployment or the
+ * settings service is not enabled". **That message named two causes it had never checked.**
+ * The real cause was a schema annotation three layers away.
+ *
+ * ⇒ Rule: a field the panel writes must be `.volatile()`, and the runtime side must
+ * `unwrap()` it. Adding a writable field without both halves reproduces this bug silently.
  */
 export const PluginConfigSchema: SchemaOf<PluginConfigInput, PluginConfigValue> = z.object({
   channels: z.dict(ChannelConfigSchema).default({}).volatile().description('渠道表：每行一个中转渠道'),
-  current: z.string().default('').description('当前使用的渠道 id'),
+  current: z.string().default('').volatile().description('当前使用的渠道 id'),
   usage: UsageConfigSchema.default({ enabled: true }),
   fallback: z.array(z.string()).default([]).description('预留：故障转移顺序（v1 未实现）'),
 })

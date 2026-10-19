@@ -129,16 +129,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    * Run one settings write and surface a refusal.
    *
    * A write can be refused for reasons the user can act on (read-only deployment, the settings
-   * service not composed, a revision conflict) and for reasons they cannot (transport). Both are
-   * facts. Silently discarding them is what makes a panel look alive while nothing is saved —
-   * which is exactly how this plugin's writes were failing without a trace.
+   * service not composed, a revision conflict, a field the host considers non-volatile) and for
+   * reasons they cannot (transport). Both are facts, and silently discarding them is what makes
+   * a panel look alive while nothing is saved.
+   *
+   * 🔴 **The refusal message must NOT name causes we have not checked.** This used to read
+   * "只读部署，或设置服务未启用" — and the one time it actually fired, the real cause was
+   * neither: `current` was missing `.volatile()` in the schema, three layers away. Naming two
+   * unchecked causes sent the investigation in the wrong direction. A refusal is a refusal:
+   * say that, and let the host's own error speak for itself.
    * @param run - the write.
    * @param context - what the user was trying to do.
    */
   const write = (run: () => Promise<boolean>, context = '保存失败'): void => {
     void run().then(
       (accepted) => {
-        if (!accepted) setError(`${context}：宿主拒绝了这个修改（只读部署，或设置服务未启用）`)
+        if (!accepted) setError(`${context}：宿主拒绝了这个修改`)
         else setError(null)
       },
       (cause: unknown) => {

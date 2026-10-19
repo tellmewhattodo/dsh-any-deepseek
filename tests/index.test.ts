@@ -25,6 +25,7 @@ import type { Context } from 'cordis'
 
 import { apply, inject, ledgerDirectory, name, Config, DEFAULT_LEDGER_DIR } from '../src/index.js'
 import type { PluginConfigValue } from '../src/config.js'
+import { unwrap } from '../src/config.js'
 import { PROVIDER_ID, PROVIDER_NAME } from '../src/adapter.js'
 import { ADVERTISED_MODEL_ID } from '../src/presets.js'
 
@@ -135,7 +136,23 @@ describe('assembly identity', () => {
 
   it('exposes a Config schema the host can parse', () => {
     const parsed = Config({ channels: { a: { model: 'm', baseURL: 'https://x/v1' } }, current: 'a' })
-    expect(parsed.current).toBe('a')
+    // `current` is volatile ⇒ the parsed value is a reference wrapper, not a bare string.
+    expect(unwrap(parsed.current)).toBe('a')
+  })
+
+  it('🔴 panel-writable fields are ALL volatile — the host refuses writes to the rest', () => {
+    // Regression guard for the "设为当前" bug. The host's write path is:
+    //   if (path.length && !isVolatilePath(schema, path)) throw 'Config field "…" is not volatile'
+    // so a non-volatile field is UNWRITABLE from the panel, and the client form turns that
+    // refusal into a bare `false` that surfaces as "read-only deployment or settings disabled".
+    // `channels` was volatile; `current` was not ⇒ every selection click failed, silently.
+    //
+    // Read the LIVE schema object, not `toJSON()`: that returns a `{uid, refs}` reference graph
+    // (measured), and the host's `isVolatilePath` walks `schema.dict[key].meta.volatile`.
+    const fields = (Config as unknown as { dict: Record<string, { meta: { volatile?: boolean } }> }).dict
+    for (const field of ['channels', 'current']) {
+      expect(fields[field]?.meta.volatile, `${field} must be .volatile()`).toBe(true)
+    }
   })
 
   it('names the plugin stably (the name is the settings namespace)', () => {
