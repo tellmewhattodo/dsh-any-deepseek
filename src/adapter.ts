@@ -477,6 +477,21 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 
   override async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
     const channel = this.selected()
+    // 🔴 `reasoning` must be OMITTED, never sent as `{ efforts: [] }`.
+    //
+    // The host treats an empty effort list as malformed, not as "no reasoning support":
+    //   if (reasoning.efforts.length === 0) throw new LlmError(…, 'INVALID_MODEL_REASONING')
+    // (`dsh-llm/lib/index.js:2144`). Measured path to that state: a channel whose
+    // `reasoningEfforts` is a present-but-empty map — which is exactly what `z.dict()` yields
+    // when the panel writes the field as `{}`, or what a preset override can leave behind.
+    // The old guard only checked `=== undefined`, so `{}` slipped through and broke the model
+    // picker with "非法的 reasoning metadata".
+    //
+    // ⇒ Emit `reasoning` only when there is at least one real effort.
+    const efforts = Object.keys(channel?.reasoningEfforts ?? {})
+    const reasoning = efforts.length === 0
+      ? {}
+      : { reasoning: { efforts: efforts.map((id) => ({ id: ReasoningEffortId(id), name: id })) } }
     return {
       provider,
       id: model,
@@ -484,16 +499,7 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       description: channel === undefined ? undefined : `via ${channel.label}`,
       context: { contextWindow: channel?.contextWindow ?? 1_000_000 },
       defaultMaxTokens: channel?.maxTokens,
-      ...channel?.reasoningEfforts === undefined
-        ? {}
-        : {
-            reasoning: {
-              efforts: Object.keys(channel.reasoningEfforts).map((id) => ({
-                id: ReasoningEffortId(id),
-                name: id,
-              })),
-            },
-          },
+      ...reasoning,
     }
   }
 

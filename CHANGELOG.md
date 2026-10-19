@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.4
+
+### 修复
+
+- 🔴 **模型选择器报「非法的 reasoning metadata」**：`resolveModel()` 只要 `reasoningEfforts`
+  **不是 `undefined`** 就输出 `reasoning: { efforts: [...] }`。当那个 map 存在但**是空对象**
+  （`{}` —— 正是 `z.dict()` 在面板写入时的取值，或预设被覆盖后留下的形态），
+  输出就是 `efforts: []`，而宿主把它当**畸形**而非"不支持推理"：
+  ```js
+  if (reasoning.efforts.length === 0) throw new LlmError(…, 'INVALID_MODEL_REASONING')
+  ```
+  （`dsh-llm/lib/index.js:2144`）⇒ 整个模型选择器加载失败。
+  - 修法：**按 `Object.keys(...).length === 0` 判，空就不发 `reasoning`**（省略 ≠ 空数组）。
+  - 负控制：把判据改回 `=== undefined` ⇒ 用例精确红 `expected { efforts: [] } to be undefined`；还原 ⇒ 126 用例回绿。
+
 ## v0.0.3
 
 ### 修复

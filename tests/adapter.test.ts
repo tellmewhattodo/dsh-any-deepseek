@@ -249,6 +249,42 @@ describe('listModels — the provider catalog', () => {
   })
 })
 
+describe('resolveModel — reasoning metadata', () => {
+  const adapterWith = (channels: ResolvedChannel[], current = 'go'): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
+    channels: () => channels,
+    current: () => current,
+    resolveKey: async () => 'sk-test',
+    record: async () => undefined,
+    now: () => new Date(0),
+    elapsed: () => 0,
+  })
+
+  it('reports the declared efforts in configuration order', async () => {
+    const info = await adapterWith([channel({ reasoningEfforts: { low: 'low', high: 'high' } })])
+      .resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+    expect(info.reasoning?.efforts.map((effort) => String(effort.id))).toEqual(['low', 'high'])
+  })
+
+  it('omits reasoning entirely when the channel declares none', async () => {
+    const info = await adapterWith([channel()]).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+    expect(info.reasoning).toBeUndefined()
+  })
+
+  it('🔴 omits reasoning when the declared map is present but EMPTY', async () => {
+    // Regression guard for "非法的 reasoning metadata". The host throws
+    // `INVALID_MODEL_REASONING` when `reasoning.efforts.length === 0` (dsh-llm:2144), and an
+    // empty `z.dict()` value — `{}` — is exactly what the settings form can store. The old guard
+    // only checked `=== undefined`, so `{}` produced `efforts: []` and broke the model picker.
+    const info = await adapterWith([channel({ reasoningEfforts: {} })]).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+    expect(info.reasoning).toBeUndefined()
+  })
+
+  it('🔴 omits reasoning when NO channel is selected', async () => {
+    const info = await adapterWith([], undefined).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+    expect(info.reasoning).toBeUndefined()
+  })
+})
+
 describe('classifyFailure', () => {
   it('recognizes the failure classes the harness routes on', () => {
     expect(classifyFailure(message({ stopReason: 'aborted' }))).toBe('ABORTED')
