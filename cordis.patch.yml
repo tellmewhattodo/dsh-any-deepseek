@@ -1,0 +1,8 @@
+# Any-deepseek bundle layer (declared by package.json `dsh.bundle.patch`).
+#
+# The entry id becomes the settings namespace: the panel, the config document and every
+# recorded reference are all keyed by `dsh-any-deepseek`, so renaming the id would move the
+# user's stored configuration. Keep it stable.
+- insert:
+    - id: dsh-any-deepseek
+      name: 'dsh-any-deepseek'

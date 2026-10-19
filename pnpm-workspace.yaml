@@ -1,0 +1,25 @@
+# pnpm 11 keeps settings here, not in package.json (the `pnpm` field is ignored).
+#
+#   allowBuilds — esbuild's install script places the platform binary. Local installs need
+#                 it; a deployment that installs with `--ignore-scripts` simply skips it.
+#   minimumReleaseAgeExclude — pnpm quarantines freshly published versions for a while as a
+#                 supply-chain guard. Every DSH release is published minutes before we pin it,
+#                 so without an exclusion a pinned rc cannot resolve at all. Entries are added
+#                 per version as they are pinned; do not widen them to a range.
+allowBuilds:
+  '@google/genai': set this to true or false
+  esbuild: true
+  protobufjs: set this to true or false
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/cordis@4.0.4'
+  - '@deepseek-ai/schemastery@3.18.4'
+  - '@deepseek-ai/dsh-api-remotes@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-client-connection@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-client-ui-settings@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-client-ui-slots@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-credentials@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-home-paths@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-host-webserver@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-llm@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-settings@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-util-values@0.2.1-rc.2'

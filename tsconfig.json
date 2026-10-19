@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "baseUrl": ".",
+    // Host types come from pinned devDependencies, never from the machine's global install:
+    // a clone that runs `pnpm install` typechecks the same way on any machine.
+    //
+    // Two rules live here:
+    //  1. every entry below must also exist in devDependencies — a missing package makes tsc
+    //     silently fall back to node_modules and turns a real contract break into a green run;
+    //  2. `cordis` and `@deepseek-ai/cordis` must resolve to the SAME package instance, because
+    //     the host's `Context` declaration merging depends on it.
+    "paths": {
+      "@deepseek-ai/dsh-llm": ["node_modules/@deepseek-ai/dsh-llm"],
+      "@deepseek-ai/dsh-llm/types": ["node_modules/@deepseek-ai/dsh-llm/lib/types/types.d.ts"],
+      "@deepseek-ai/dsh-credentials": ["node_modules/@deepseek-ai/dsh-credentials"],
+      "@deepseek-ai/dsh-credentials/types": ["node_modules/@deepseek-ai/dsh-credentials/lib/types/types.d.ts"],
+      "@deepseek-ai/dsh-home-paths": ["node_modules/@deepseek-ai/dsh-home-paths"],
+      "@deepseek-ai/dsh-host-webserver": ["node_modules/@deepseek-ai/dsh-host-webserver"],
+      "@deepseek-ai/dsh-settings": ["node_modules/@deepseek-ai/dsh-settings"],
+      "@deepseek-ai/dsh-settings/types": ["node_modules/@deepseek-ai/dsh-settings/lib/types/types.d.ts"],
+      "@deepseek-ai/dsh-util-values": ["node_modules/@deepseek-ai/dsh-util-values"],
+      "@deepseek-ai/dsh-client-ui-settings": ["node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-settings/client": ["node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": ["node_modules/@deepseek-ai/dsh-client-ui-slots/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-api-remotes": ["node_modules/@deepseek-ai/dsh-api-remotes"],
+      "@deepseek-ai/dsh-api-remotes/client": ["node_modules/@deepseek-ai/dsh-api-remotes/lib/types/client/index.d.ts"],
+      "cordis": ["node_modules/@deepseek-ai/cordis"],
+      "@deepseek-ai/cordis": ["node_modules/@deepseek-ai/cordis"],
+      "schemastery": ["node_modules/@deepseek-ai/schemastery"],
+      "@deepseek-ai/schemastery": ["node_modules/@deepseek-ai/schemastery"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["src/client"]
+}
