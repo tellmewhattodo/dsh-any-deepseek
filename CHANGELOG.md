@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0
+## v0.0.1
 
 首个可用版本。一个 provider、一个模型（DeepSeek V4.1 Flash），多个中转渠道，
 按**实际供应商**记账。
