@@ -1,0 +1,274 @@
+/* Panel styles. Uses the harness's alias tokens where they exist, plain values otherwise, so
+   the page follows the surrounding theme instead of hardcoding a palette. */
+
+.ad-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 4px 2px 12px;
+}
+
+.ad-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ad-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ad-intro {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.72;
+}
+
+.ad-error {
+  border: 1px solid var(--dsw-alias-color-danger, #c0392b);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.ad-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ad-sectionTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.ad-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ad-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.ad-row-current {
+  border-color: var(--dsw-alias-color-accent, #3b82f6);
+}
+
+.ad-rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ad-rowTitleLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ad-rowTitle {
+  white-space: nowrap;
+}
+
+.ad-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: 0.8;
+}
+
+.ad-warn {
+  color: #b7791f;
+  cursor: help;
+}
+
+.ad-rowMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.66;
+  min-width: 0;
+}
+
+.ad-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.ad-sep {
+  opacity: 0.5;
+}
+
+.ad-rowActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ad-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ad-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ad-btn-quiet {
+  opacity: 0.8;
+}
+
+.ad-probe {
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.ad-probe-ok {
+  color: #2f855a;
+}
+
+.ad-probe-bad {
+  color: #c53030;
+  word-break: break-word;
+}
+
+.ad-hint,
+.ad-empty,
+.ad-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0.66;
+}
+
+.ad-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.ad-dot-on {
+  background: #2f855a;
+}
+
+.ad-dot-off {
+  border: 1px solid currentColor;
+  opacity: 0.5;
+}
+
+.ad-dot-unknown {
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+  opacity: 0.5;
+}
+
+.ad-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.ad-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.ad-switchTrack {
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--dsw-alias-color-border, rgba(0, 0, 0, 0.2));
+  transition: background 120ms ease;
+}
+
+.ad-switch input:checked + .ad-switchTrack {
+  background: var(--dsw-alias-color-accent, #3b82f6);
+}
+
+.ad-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.ad-tab {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ad-tab-on {
+  border-color: var(--dsw-alias-color-accent, #3b82f6);
+  font-weight: 600;
+}
+
+.ad-tab-refresh {
+  margin-left: auto;
+  opacity: 0.75;
+}
+
+.ad-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.ad-table th,
+.ad-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.08));
+  text-align: left;
+}
+
+.ad-table th {
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+.ad-num {
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ad-total td {
+  font-weight: 600;
+  border-bottom: none;
+}

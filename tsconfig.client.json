@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/client", "src/index.ts", "src/adapter.ts", "src/channels.ts", "src/config.ts", "src/http.ts", "src/presets.ts", "src/route.ts", "src/usage-ledger.ts"],
+  "exclude": []
+}

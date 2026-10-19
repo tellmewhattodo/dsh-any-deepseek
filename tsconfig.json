@@ -20,6 +20,10 @@
     // Two rules live here:
     //  1. every entry below must also exist in devDependencies — a missing package makes tsc
     //     silently fall back to node_modules and turns a real contract break into a green run;
+    //     `@deepseek-ai/dsh-client-store` is the live example: ui-slots' .d.ts imports
+    //     `ObservableSnapshot`/`SnapshotSelectorHook` from it, but ships it only as its own
+    //     devDependency. Unpinned, those types degrade to `any`, so every hook-shaped prop loses
+    //     its snapshot type and `skipLibCheck` keeps the run green.
     //  2. `cordis` and `@deepseek-ai/cordis` must resolve to the SAME package instance, because
     //     the host's `Context` declaration merging depends on it.
     "paths": {
@@ -35,6 +39,8 @@
       "@deepseek-ai/dsh-client-ui-settings": ["node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-settings/client": ["node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-slots": ["node_modules/@deepseek-ai/dsh-client-ui-slots/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-store": ["node_modules/@deepseek-ai/dsh-client-store/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-renderer": ["node_modules/@deepseek-ai/dsh-client-ui-renderer/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-api-remotes": ["node_modules/@deepseek-ai/dsh-api-remotes"],
       "@deepseek-ai/dsh-api-remotes/client": ["node_modules/@deepseek-ai/dsh-api-remotes/lib/types/client/index.d.ts"],
       "cordis": ["node_modules/@deepseek-ai/cordis"],
