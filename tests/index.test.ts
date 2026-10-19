@@ -126,6 +126,13 @@ describe('assembly identity', () => {
     expect(inject).toContain('llm')
   })
 
+  it('waits for webServer, so route registration cannot race the service', () => {
+    // `apply` runs as soon as `llm` is up. Reading `webServer` there without declaring it
+    // returns undefined, and all three panel routes are skipped silently — the panel still
+    // renders and every fetch 404s. Declaring it makes cordis wait instead of race.
+    expect(inject).toContain('webServer')
+  })
+
   it('exposes a Config schema the host can parse', () => {
     const parsed = Config({ channels: { a: { model: 'm', baseURL: 'https://x/v1' } }, current: 'a' })
     expect(parsed.current).toBe('a')

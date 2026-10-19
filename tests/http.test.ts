@@ -29,6 +29,8 @@ import {
   type WebServerLike,
 } from '../src/http.js'
 import type { ResolvedChannel } from '../src/channels.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME } from '../src/presets.js'
+import { PROVIDER_NAME } from '../src/adapter.js'
 
 /** One resolved channel for the fixtures. */
 function channel(overrides: Partial<ResolvedChannel> = {}): ResolvedChannel {
@@ -78,7 +80,8 @@ function mount(deps: Partial<RouteDeps> = {}): {
     channels: () => [channel()],
     resolveKey: async () => 'sk-secret-value',
     listPresets: () => [{ id: 'opencode-go', displayName: 'OpenCode Go' }],
-    advertised: () => ({ id: 'deepseek-v4.1-flash', name: 'Any DeepSeek' }),
+    // Mirrors what `apply` wires: the MODEL name, not the provider name.
+    advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
     describeKey: async () => ({ configured: true, source: 'store' }),
     ...deps,
   }
@@ -146,6 +149,16 @@ describe('GET /channels', () => {
     expect(JSON.stringify(body)).not.toContain('sk-secret-value')
     expect(body.presets).toHaveLength(1)
     expect(body.model.id).toBe('deepseek-v4.1-flash')
+  })
+
+  it('reports the MODEL name, not the provider name', async () => {
+    // The panel prints this inside "一个模型（…）". Handing it the provider name there read as
+    // a copy-paste slip on screen ("一个模型（Any DeepSeek）").
+    const { call } = mount()
+    const response = await call(`${ROUTE_PREFIX}/channels`)
+    const model = (response.body as { model: { id: string; name: string } }).model
+    expect(model.name).not.toBe(PROVIDER_NAME)
+    expect(model.name).toBe(ADVERTISED_MODEL_NAME)
   })
 
   it('marks an unconfigured key as absent rather than failing the route', async () => {

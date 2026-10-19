@@ -20,7 +20,7 @@ import type { Context } from 'cordis'
 import { join } from 'node:path'
 
 import { PluginConfigSchema, unwrapChannels, type PluginConfigValue } from './config.js'
-import { ADVERTISED_MODEL_ID, CHANNEL_PRESETS, presetIds } from './presets.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { enabledChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME } from './adapter.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
@@ -29,8 +29,20 @@ import { registerStatsRoutes, type WebServerLike } from './http.js'
 /** Plugin name, used by the host for diagnostics. */
 export const name = 'any-deepseek'
 
-/** Services this plugin waits for. `llm` is mandatory: without it there is nothing to register. */
-export const inject = ['llm']
+/**
+ * Services this plugin waits for.
+ *
+ * `llm` is mandatory: without it there is nothing to register.
+ *
+ * 🔴 `webServer` is declared because of ORDER, not existence. `ctx.get('webServer')` reads
+ * without an inject requirement, so `apply` could call it — but `apply` runs as soon as `llm`
+ * exists, which is BEFORE the webserver plugin finishes mounting. The read then returns
+ * `undefined`, `typeof undefined?.register === 'function'` is false, and all three panel routes
+ * are skipped with no error anywhere: the panel loads, every fetch 404s, and the table renders
+ * "no channels" as though that were the truth. Declaring it makes cordis wait for the service
+ * instead of racing it.
+ */
+export const inject = ['llm', 'webServer']
 
 /** The configuration schema (see config.ts for the volatile/annotation constraints). */
 export const Config = PluginConfigSchema
@@ -185,7 +197,9 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
       channels,
       resolveKey,
       listPresets: () => presetIds().map((id) => ({ id, displayName: CHANNEL_PRESETS[id]?.displayName ?? id })),
-      advertised: () => ({ id: ADVERTISED_MODEL_ID, name: PROVIDER_NAME }),
+      // The advertises model NAME, not the provider name: the panel prints this inside
+      // "一个模型（…）", so a provider name there reads as a copy-paste slip to the user.
+      advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
       describeKey: async (ref: string) => {
         const seam = credentials()
         if (seam?.describe === undefined) return { configured: process.env[ref] !== undefined, source: 'env' }
