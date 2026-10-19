@@ -96,6 +96,15 @@ const SUPPORTED_APIS: readonly ChannelApi[] = [
   'anthropic-messages',
 ]
 
+/**
+ * Wire protocol applied when a channel declares none.
+ *
+ * OpenAI-compatible completions is what essentially every relay speaks, it has the widest compat
+ * surface in pi-ai, and pi-ai already normalizes the three usage spellings it produces. A channel
+ * that only offers Responses can still say so explicitly.
+ */
+const DEFAULT_API: ChannelApi = 'openai-completions'
+
 /** Fields a channel entry may carry; used only to report unknown keys. */
 const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'label',
@@ -190,12 +199,16 @@ export function resolveChannel(
   }
 
   // Endpoint facts: preset value, then the entry's own declaration.
-  const apiRaw = nonEmpty(entry.api) ?? preset?.api
+  //
+  // `api` is the one field that DEFAULTS rather than being required: OpenAI-compatible completions
+  // is the lowest common denominator every relay speaks, and the schema text promises it. Making
+  // it mandatory meant a user who followed the documented "just give a model and a baseURL" path
+  // was rejected with MISSING_FIELD — the config said "default" and the code said "required".
+  const apiRaw = nonEmpty(entry.api) ?? preset?.api ?? DEFAULT_API
   const baseURL = nonEmpty(entry.baseURL) ?? preset?.baseURL
   const model = nonEmpty(entry.model) ?? preset?.model
 
   const missing: string[] = []
-  if (apiRaw === undefined) missing.push('api')
   if (baseURL === undefined) missing.push('baseURL')
   if (model === undefined) missing.push('model')
   if (missing.length > 0) {

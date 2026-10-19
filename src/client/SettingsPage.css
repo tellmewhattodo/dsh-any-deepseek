@@ -272,3 +272,52 @@
   font-weight: 600;
   border-bottom: none;
 }
+
+/* ── add-channel form ─────────────────────────────────────────────────────── */
+
+.ad-addForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px dashed var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.ad-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.ad-field > span {
+  opacity: 0.7;
+}
+
+.ad-input {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+}
+
+.ad-fieldError {
+  margin: 0;
+  font-size: 11px;
+  color: #c53030;
+}
+
+/* A destructive action is quiet until hovered: it should be findable, not inviting. */
+.ad-btn-danger {
+  opacity: 0.6;
+}
+
+.ad-btn-danger:hover:not(:disabled) {
+  opacity: 1;
+  border-color: var(--dsw-alias-color-danger, #c0392b);
+  color: var(--dsw-alias-color-danger, #c0392b);
+}

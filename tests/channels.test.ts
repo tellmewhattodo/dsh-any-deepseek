@@ -82,9 +82,20 @@ describe('resolveChannel — custom entries', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.problem.code).toBe('MISSING_FIELD')
-    expect(result.problem.detail).toContain('api')
+    // `api` is NOT in this list: it defaults to openai-completions, which is what the schema
+    // text and the design decision both promise. Only the facts that cannot be guessed are named.
     expect(result.problem.detail).toContain('baseURL')
     expect(result.problem.detail).toContain('model')
+    expect(result.problem.detail).not.toContain('api,')
+  })
+
+  it('defaults the wire protocol to openai-completions when a custom channel omits it', () => {
+    // A relay that speaks only Responses can still say so explicitly; making `api` mandatory
+    // meant the documented "just give a model and a baseURL" path was rejected outright.
+    const result = resolveChannel('mine', { apiKeyEnv: 'K', baseURL: 'https://x.example/v1', model: 'm' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.channel.api).toBe('openai-completions')
   })
 })
 

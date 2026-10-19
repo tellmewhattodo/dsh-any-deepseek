@@ -24,7 +24,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import { SettingsPage, SettingsPageInjected } from './SettingsPage.js'
+import { SettingsPage, SettingsPageInjected, type JsonValue } from './SettingsPage.js'
 import {
   fetchChannels,
   fetchStats,
@@ -33,8 +33,17 @@ import {
   type StatsResponse,
 } from './panel-api.js'
 
-/** Settings namespace; matches the profile entry id declared in cordis.patch.yml. */
-export const SETTINGS_NS = 'any-deepseek'
+/**
+ * Settings namespace — the PROFILE ENTRY id, not the plugin's bare name.
+ *
+ * The host keys the settings document by the cordis entry id declared in `cordis.patch.yml`
+ * (`dsh-any-deepseek`). `configForms.get()` and `whileServed()` both match on THAT string, so
+ * using `'any-deepseek'` here meant the watch never resolved and the panel registered nothing —
+ * silently, with no console error, while the bundle was fetched and executed normally. Verified
+ * against the host: `--dump-config-schema` reports the namespace as `dsh-any-deepseek`, and
+ * official plugins follow the same rule (`configForms.get('ui-settings')`, `get('ui-chat')`).
+ */
+export const SETTINGS_NS = 'dsh-any-deepseek'
 
 /** Services this half waits for. */
 export const inject = ['slots', 'configForms']
@@ -77,9 +86,19 @@ export function apply(ctx: ClientContext): void {
                   loadStats: (group: 'channel' | 'day', from?: string, to?: string): Promise<StatsResponse> =>
                     fetchStats(group, from, to),
                   probe: (id: string) => probeChannel(id),
-                  setField: (field: string, value: unknown) => {
-                    // A rejected write leaves the mirror to recover; the panel must not throw.
-                    void form.set(field, value).catch(() => undefined)
+                  setField: (path: readonly string[], value: JsonValue): Promise<boolean> => {
+                    // 🔴 `ConfigForm.set(field, value)` builds `path: [field]` — ONE segment. A
+                    // dotted string therefore writes a literal key named "channels.go.enabled"
+                    // instead of toggling the switch, and the host accepts it silently. Only
+                    // `mutate` carries a real path, so every nested write goes through it.
+                    //
+                    // The promise is RETURNED, not swallowed: a refused write (read-only
+                    // deployment, unavailable settings service, revision conflict) is a fact the
+                    // user must see. Swallowing it made a dead panel look like a working one.
+                    return form.mutate([{ op: 'set', path: [...path], value }])
+                  },
+                  removeField: (path: readonly string[]): Promise<boolean> => {
+                    return form.mutate([{ op: 'unset', path: [...path] }])
                   },
                 }),
               },

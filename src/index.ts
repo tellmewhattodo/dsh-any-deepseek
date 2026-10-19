@@ -165,11 +165,15 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
 
   // Give the route an address on the Models page. Without this the model is selectable but has
   // nowhere to be configured — a documented limitation of routes that skip the directory.
+  //
+  // `settingsNs` is the PROFILE ENTRY id (`dsh-any-deepseek`), the same string the client half
+  // watches; the bare plugin name is not a settings namespace and pointing at it makes the
+  // directory row dead.
   if (typeof llm?.registerConfigurableProviders === 'function') {
     llm.registerConfigurableProviders([{
       provider: PROVIDER_ID,
       displayName: PROVIDER_NAME,
-      settingsNs: 'any-deepseek',
+      settingsNs: 'dsh-any-deepseek',
       settingsPath: [],
     }])
   }

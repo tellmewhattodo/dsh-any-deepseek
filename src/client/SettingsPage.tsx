@@ -31,8 +31,22 @@ export interface SettingsPageInjected {
   }>
   loadStats: (group: 'channel' | 'day', from?: string, to?: string) => Promise<StatsResponse>
   probe: (id: string) => Promise<ProbeResult>
-  setField: (field: string, value: unknown) => void
+  /**
+   * Write one value at a real path.
+   *
+   * Path SEGMENTS, not a dotted string: the harness's `ConfigForm.set` builds `path: [field]`,
+   * i.e. one segment, so `'channels.go.enabled'` would create a key with dots in its name rather
+   * than toggling the switch. Only `mutate` carries a genuine multi-segment path.
+   *
+   * Resolves `true` on host acceptance. A refusal is NOT swallowed — see {@link write}.
+   */
+  setField: (path: readonly string[], value: JsonValue) => Promise<boolean>
+  /** Clear one value at a real path (re-inherits the composition layer). */
+  removeField: (path: readonly string[]) => Promise<boolean>
 }
+
+/** The JSON value shapes a settings write accepts. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
 type SettingsPageProps = PropsRuntime<'settings.section'> & InjectFace<SettingsPageInjected>
 
@@ -66,7 +80,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   // The reserved `hooks` compartment never reaches us either: the renderer strips it and
   // re-emits each member as a bound `use<Name>` selector hook (`bindInjectSources`).
   // So `hooks: { settings: form }` arrives here as `useSettings`.
-  const { useSettings, loadChannels, loadStats, probe, setField } = props
+  const { useSettings, loadChannels, loadStats, probe, setField, removeField } = props
   const settings = useSettings((snapshot) => snapshot)
 
   const [rows, setRows] = useState<ChannelRow[]>([])
@@ -77,6 +91,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [probing, setProbing] = useState<string | null>(null)
   const [verdict, setVerdict] = useState<Record<string, ProbeResult>>({})
   const [error, setError] = useState<string | null>(null)
+
+  /** The "add a channel" form. Collapsed until asked for — an empty panel is not a form. */
+  const [adding, setAdding] = useState(false)
+  const [newId, setNewId] = useState('')
+  const [newPreset, setNewPreset] = useState('')
+  const [newKeyRef, setNewKeyRef] = useState('')
 
   const refresh = useCallback(async (): Promise<void> => {
     const [loaded, statsNow] = await Promise.all([loadChannels(), loadStats(group)])
@@ -96,13 +116,35 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const channels = settings.value?.channels ?? {}
 
   const select = (id: string): void => {
-    setField('current', id)
+    write(() => setField(['current'], id))
   }
 
   const toggleChannel = (id: string, on: boolean): void => {
     // Path-scoped write: only this channel's `enabled` field, so a concurrent edit to another
     // channel cannot be clobbered by a whole-section rewrite.
-    setField(`channels.${id}.enabled`, on)
+    write(() => setField(['channels', id, 'enabled'], on), '切换渠道开关失败')
+  }
+
+  /**
+   * Run one settings write and surface a refusal.
+   *
+   * A write can be refused for reasons the user can act on (read-only deployment, the settings
+   * service not composed, a revision conflict) and for reasons they cannot (transport). Both are
+   * facts. Silently discarding them is what makes a panel look alive while nothing is saved —
+   * which is exactly how this plugin's writes were failing without a trace.
+   * @param run - the write.
+   * @param context - what the user was trying to do.
+   */
+  const write = (run: () => Promise<boolean>, context = '保存失败'): void => {
+    void run().then(
+      (accepted) => {
+        if (!accepted) setError(`${context}：宿主拒绝了这个修改（只读部署，或设置服务未启用）`)
+        else setError(null)
+      },
+      (cause: unknown) => {
+        setError(`${context}：${cause instanceof Error ? cause.message : String(cause)}`)
+      },
+    )
   }
 
   const runProbe = async (id: string): Promise<void> => {
@@ -113,6 +155,43 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     } finally {
       setProbing(null)
     }
+  }
+
+  /** Whether the add-form's id is usable as a channel key. */
+  const newIdProblem = ((): string | null => {
+    const id = newId.trim()
+    if (id === '') return null
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(id)) return '只能用小写字母、数字、- 和 _，且不能以符号开头'
+    if (channels[id] !== undefined) return '这个 id 已经有了'
+    return null
+  })()
+
+  /**
+   * Create one channel from the form.
+   *
+   * Writes only the fields the user actually chose: a preset-backed channel needs nothing but
+   * a key reference, and pre-filling endpoint fields would freeze today's preset values into the
+   * user's document (later preset fixes would never reach them).
+   */
+  const addChannel = (): void => {
+    const id = newId.trim()
+    if (id === '' || newIdProblem !== null || newKeyRef.trim() === '') return
+    write(() => setField(['channels', id], {
+      ...newPreset === '' ? {} : { preset: newPreset },
+      apiKeyEnv: newKeyRef.trim(),
+    }), '添加渠道失败')
+    // The first channel added to an empty document becomes current: leaving `current` empty
+    // means every request fails with NO_CHANNEL_SELECTED, which reads as a broken plugin.
+    if (current === '') write(() => setField(['current'], id), '设为当前渠道失败')
+    setNewId('')
+    setNewKeyRef('')
+    setNewPreset('')
+    setAdding(false)
+  }
+
+  const removeChannel = (id: string): void => {
+    write(() => removeField(['channels', id]), '移除渠道失败')
+    if (current === id) write(() => removeField(['current']), '清除当前选择失败')
   }
 
   return (
@@ -132,9 +211,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
       <section className="ad-section">
         <h3 className="ad-sectionTitle">渠道</h3>
         {rows.length === 0 && (
-          <p className="ad-empty">
-            还没有渠道。在配置文件里给 <code>any-deepseek.channels</code> 添加一项，或等待本面板的编辑功能。
-          </p>
+          <p className="ad-empty">还没有渠道。用下面的表单加一个。</p>
         )}
         <ul className="ad-rows">
           {rows.map((row) => {
@@ -184,19 +261,84 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   >
                     {probing === row.id ? '测试中…' : '测试'}
                   </button>
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn-danger"
+                    title="移除此渠道（不删除凭据本身）"
+                    onClick={() => removeChannel(row.id)}
+                  >
+                    移除
+                  </button>
                   <Toggle checked={enabled} onChange={(on) => toggleChannel(row.id, on)} />
                 </div>
               </li>
             )
           })}
         </ul>
+
+        {/*
+          Adding is a form, not a JSON editor: the two facts a user must supply are an id and a
+          credential reference, and the endpoint comes from a preset. Showing only those keeps
+          "what do I type" answerable without reading the schema.
+        */}
+        {adding ? (
+          <div className="ad-addForm">
+            <label className="ad-field">
+              <span>渠道 id</span>
+              <input
+                className="ad-input"
+                value={newId}
+                placeholder="例如 opencode-go"
+                onChange={(event) => setNewId(event.target.value)}
+              />
+            </label>
+            {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
+            <label className="ad-field">
+              <span>规格</span>
+              <select
+                className="ad-input"
+                value={newPreset}
+                onChange={(event) => setNewPreset(event.target.value)}
+              >
+                <option value="">自定义（稍后在配置文件里补端点）</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.displayName}</option>
+                ))}
+              </select>
+            </label>
+            <label className="ad-field">
+              <span>凭据引用名</span>
+              <input
+                className="ad-input"
+                value={newKeyRef}
+                placeholder="例如 OPENCODE_GO_API_KEY"
+                onChange={(event) => setNewKeyRef(event.target.value)}
+              />
+            </label>
+            <p className="ad-hint">
+              这里填的是**引用名**（环境变量名），不是密钥本身。密钥请通过凭据中心设置。
+            </p>
+            <div className="ad-rowActions">
+              <button
+                type="button"
+                className="ad-btn"
+                disabled={newId.trim() === '' || newIdProblem !== null || newKeyRef.trim() === ''}
+                onClick={addChannel}
+              >
+                添加
+              </button>
+              <button type="button" className="ad-btn ad-btn-quiet" onClick={() => setAdding(false)}>
+                取消
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="ad-btn" onClick={() => setAdding(true)}>
+            添加渠道
+          </button>
+        )}
         {current === '' && rows.length > 0 && (
           <p className="ad-hint">尚未选择当前渠道，请求会以 NO_CHANNEL_SELECTED 失败。</p>
-        )}
-        {presets.length > 0 && (
-          <p className="ad-hint">
-            内置规格：{presets.map((preset) => preset.id).join('、')}（配置文件里用 <code>preset:</code> 引用，只需再给一个 key 引用）
-          </p>
         )}
       </section>
 
