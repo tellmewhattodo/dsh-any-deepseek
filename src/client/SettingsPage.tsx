@@ -340,19 +340,21 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   // that is EMPTY or was itself derived by a previous preset choice. A value the
                   // user typed is theirs: switching presets must not silently discard it.
                   //
-                  // 🔴 The id branch used to read `previous === '' || previous === ''` — the same
-                  // test twice, so a derived id was never replaced. Measured in the real browser:
-                  // choosing Open Design then switching to Ollama left the id at "open-design"
-                  // while the select showed Ollama. Both fields now compare against their own
-                  // last suggestion.
-                  setNewId((previous) => (previous === '' || previous === lastSuggestedId.current)
-                    ? suggestId(next, rows)
-                    : previous)
-                  setNewKeyRef((previous) => (previous === '' || previous === lastSuggestedKeyRef.current)
-                    ? suggestKeyRef(next)
-                    : previous)
-                  lastSuggestedId.current = suggestId(next, rows)
-                  lastSuggestedKeyRef.current = suggestKeyRef(next)
+                  // 🔴 Read the previous suggestions into LOCALS before scheduling the updates.
+                  // A React state updater runs LATER, so `previous === lastSuggestedId.current`
+                  // inside one compared against the value this handler had already overwritten —
+                  // the test could never succeed and a derived id was never refreshed. Measured
+                  // in the real browser: Open Design then Ollama kept id "open-design" while the
+                  // select showed Ollama. (An earlier version of this branch also read
+                  // `previous === '' || previous === ''` — the same test twice.)
+                  const previousId = lastSuggestedId.current
+                  const previousKey = lastSuggestedKeyRef.current
+                  const nextId = suggestId(next, rows)
+                  const nextKey = suggestKeyRef(next)
+                  setNewId((current) => (current === '' || current === previousId) ? nextId : current)
+                  setNewKeyRef((current) => (current === '' || current === previousKey) ? nextKey : current)
+                  lastSuggestedId.current = nextId
+                  lastSuggestedKeyRef.current = nextKey
                 }}
               >
                 <option value="">选择规格…</option>

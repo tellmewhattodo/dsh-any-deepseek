@@ -160,24 +160,31 @@ describe('the add form derives what the preset already answers', () => {
     expect(suggestKeyRef('deepseek-official')).toBe('DEEPSEEK_OFFICIAL_API_KEY')
   })
 
-  it('🔴 each derived field compares against its OWN last suggestion', () => {
-    // Regression guard for a typo that no pure-function test could catch: the id branch read
-    // `previous === '' || previous === ''` — the same test twice — so once a preset had filled
-    // the id, switching to another preset never replaced it. Measured in the real browser:
-    // Open Design → Ollama left the id at "open-design" while the select showed Ollama.
-    // A structural check is the honest guard here: the component's decision has to name both
-    // refs, and neither comparison may be duplicated.
+  it('🔴 each derived field compares against the PREVIOUS suggestion, captured as a local', () => {
+    // Two distinct bugs live here, both invisible to a pure-function test:
+    //  ① the branch once read `previous === '' || previous === ''` — the same test twice;
+    //  ② even with both refs named, reading them INSIDE the updater compares against the value
+    //     the handler already overwrote, because a React state updater runs later.
+    // Measured in the real browser both times: Open Design → Ollama kept id "open-design"
+    // while the select showed Ollama.
     const page = pageSource()
-    expect(page).toContain('previous === lastSuggestedId.current')
-    expect(page).toContain('previous === lastSuggestedKeyRef.current')
-    // Check only EXECUTABLE lines: the explanatory comment above quotes the broken form, and a
-    // substring test over the whole file cannot tell a comment from code (same lesson as the
-    // "设为当前" assertion earlier in this file).
+    // The handler captures both suggestions before scheduling any update…
+    expect(page).toContain('const previousId = lastSuggestedId.current')
+    expect(page).toContain('const previousKey = lastSuggestedKeyRef.current')
+    // …and the updaters compare against those locals, never against a live ref.
+    expect(page).toContain('current === previousId')
+    expect(page).toContain('current === previousKey')
+    // Check only EXECUTABLE lines: comments quote the broken forms, and a substring test over
+    // the whole file cannot tell a comment from code.
     const code = page
       .split('\n')
       .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
       .join('\n')
     expect(code).not.toMatch(/previous === '' \|\| previous === ''/)
+    // The updater body must not read a ref: that is bug ②.
+    for (const updater of code.match(/set(?:NewId|NewKeyRef)\(\(current\) => [^\n]*/g) ?? []) {
+      expect(updater).not.toContain('.current')
+    }
   })
 })
 
