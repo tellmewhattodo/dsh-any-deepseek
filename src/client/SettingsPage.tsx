@@ -125,6 +125,8 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    * switching presets after typing a custom reference would silently discard the user's input.
    */
   const lastSuggestedKeyRef = useRef('')
+  /** Same idea for the derived channel id (see the select's onChange). */
+  const lastSuggestedId = useRef('')
 
   const refresh = useCallback(async (): Promise<void> => {
     const [loaded, statsNow] = await Promise.all([loadChannels(), loadStats(group)])
@@ -219,6 +221,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     setNewKeyRef('')
     setNewPreset('')
     lastSuggestedKeyRef.current = ''
+    lastSuggestedId.current = ''
     setAdding(false)
   }
 
@@ -333,12 +336,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 onChange={(event) => {
                   const next = event.target.value
                   setNewPreset(next)
-                  // Derive the two fields a preset already answers. Only fill what is still empty
-                  // or was itself derived, so a hand-edited value is never silently overwritten.
-                  setNewId((previous) => (previous === '' || previous === '') ? suggestId(next, rows) : previous)
+                  // Derive the two fields the preset already answers — but only replace a value
+                  // that is EMPTY or was itself derived by a previous preset choice. A value the
+                  // user typed is theirs: switching presets must not silently discard it.
+                  //
+                  // 🔴 The id branch used to read `previous === '' || previous === ''` — the same
+                  // test twice, so a derived id was never replaced. Measured in the real browser:
+                  // choosing Open Design then switching to Ollama left the id at "open-design"
+                  // while the select showed Ollama. Both fields now compare against their own
+                  // last suggestion.
+                  setNewId((previous) => (previous === '' || previous === lastSuggestedId.current)
+                    ? suggestId(next, rows)
+                    : previous)
                   setNewKeyRef((previous) => (previous === '' || previous === lastSuggestedKeyRef.current)
                     ? suggestKeyRef(next)
                     : previous)
+                  lastSuggestedId.current = suggestId(next, rows)
                   lastSuggestedKeyRef.current = suggestKeyRef(next)
                 }}
               >
@@ -385,7 +398,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <button type="button" className="ad-btn" onClick={() => setAdding(true)}>
+          <button type="button" className="ad-btn" onClick={() => { setAdding(true); lastSuggestedId.current = ''; lastSuggestedKeyRef.current = '' }}>
             添加渠道
           </button>
         )}

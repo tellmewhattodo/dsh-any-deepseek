@@ -159,6 +159,26 @@ describe('the add form derives what the preset already answers', () => {
     expect(suggestKeyRef('opencode-go')).toBe('OPENCODE_GO_API_KEY')
     expect(suggestKeyRef('deepseek-official')).toBe('DEEPSEEK_OFFICIAL_API_KEY')
   })
+
+  it('🔴 each derived field compares against its OWN last suggestion', () => {
+    // Regression guard for a typo that no pure-function test could catch: the id branch read
+    // `previous === '' || previous === ''` — the same test twice — so once a preset had filled
+    // the id, switching to another preset never replaced it. Measured in the real browser:
+    // Open Design → Ollama left the id at "open-design" while the select showed Ollama.
+    // A structural check is the honest guard here: the component's decision has to name both
+    // refs, and neither comparison may be duplicated.
+    const page = pageSource()
+    expect(page).toContain('previous === lastSuggestedId.current')
+    expect(page).toContain('previous === lastSuggestedKeyRef.current')
+    // Check only EXECUTABLE lines: the explanatory comment above quotes the broken form, and a
+    // substring test over the whole file cannot tell a comment from code (same lesson as the
+    // "设为当前" assertion earlier in this file).
+    const code = page
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+      .join('\n')
+    expect(code).not.toMatch(/previous === '' \|\| previous === ''/)
+  })
 })
 
 describe('what stays forbidden', () => {
