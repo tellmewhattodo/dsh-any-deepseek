@@ -20,6 +20,8 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { suggestId, suggestKeyRef } from '../src/client/SettingsPage.js'
+
 /** The panel's write helper, read from source (see the note in the last test). */
 function clientSource(): string {
   return readFileSync(join(process.cwd(), 'src', 'client', 'index.ts'), 'utf-8')
@@ -77,8 +79,28 @@ describe('settings writes use real paths', () => {
     // different door — the helper takes arrays now, so any quoted string is a mistake.
     const dotted = page.match(/setField\(\s*['"][^'"]*\./)
     expect(dotted).toBeNull()
-    expect(page).toContain("setField(['channels', id, 'enabled'], on)")
     expect(page).toContain("setField(['current'], id)")
+  })
+
+  it('🔴 selection is the ONLY channel-level write — there is no `enabled` toggle', () => {
+    // `enabled` was a second on/off axis for the same question `current` already answers, so it
+    // was removed (a channel could be enabled-but-not-current, or current-but-disabled — both
+    // meaningless). A resurrected toggle would bring back the contradiction.
+    const page = pageSource()
+    expect(page).not.toContain("'enabled'")
+    expect(page).not.toMatch(/\bToggle\b/)
+  })
+
+  it('🔴 renders channels as a radio group, not per-row action buttons', () => {
+    // "Which relay is live" is single-choice. A radio expresses that in the affordance; a
+    // "设为当前" button made the same fact look like an action the panel performs.
+    const page = pageSource()
+    expect(page).toContain('role="radiogroup"')
+    expect(page).toContain('type="radio"')
+    // Assert on the JSX text node, not the whole file: the phrase may legitimately appear in a
+    // comment or in an error message, and a substring check over all source cannot tell them
+    // apart from a rendered button label.
+    expect(page).not.toMatch(/>\s*设为当前\s*</)
   })
 })
 
@@ -110,6 +132,32 @@ describe('add-channel form', () => {
     // A `current` pointing at a deleted channel leaves a dangling selection that reads as a
     // configured-but-broken plugin rather than as "nothing selected".
     expect(page).toMatch(/if \(current === id\) write\(\(\) => removeField\(\['current'\]\)/)
+  })
+})
+
+describe('the add form derives what the preset already answers', () => {
+  // A preset fully determines the endpoint and conventionally determines the credential reference
+  // name. Asking the user to retype them is the friction the owner reported; deriving them is the
+  // fix, and the derivation is pure so it can be pinned here.
+  it('suggests the preset id as the channel id when it is free', () => {
+    expect(suggestId('open-design', [])).toBe('open-design')
+  })
+
+  it('de-duplicates so two relays on the same preset do not collide', () => {
+    // The second Open Design channel must not overwrite the first: the id is a configuration key.
+    expect(suggestId('open-design', [{ id: 'open-design' }])).toBe('open-design-2')
+    expect(suggestId('open-design', [{ id: 'open-design' }, { id: 'open-design-2' }])).toBe('open-design-3')
+  })
+
+  it('suggests nothing when no preset is chosen', () => {
+    expect(suggestId('', [])).toBe('')
+    expect(suggestKeyRef('')).toBe('')
+  })
+
+  it('derives an UPPER_SNAKE reference name from the preset id', () => {
+    expect(suggestKeyRef('open-design')).toBe('OPEN_DESIGN_API_KEY')
+    expect(suggestKeyRef('opencode-go')).toBe('OPENCODE_GO_API_KEY')
+    expect(suggestKeyRef('deepseek-official')).toBe('DEEPSEEK_OFFICIAL_API_KEY')
   })
 })
 

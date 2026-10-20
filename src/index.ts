@@ -21,7 +21,7 @@ import { join } from 'node:path'
 
 import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } from './config.js'
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
-import { enabledChannels, resolveChannels } from './channels.js'
+import { allChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME } from './adapter.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
 import { registerStatsRoutes, type WebServerLike } from './http.js'
@@ -138,16 +138,17 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
   }
 
   /**
-   * The current channel set.
+   * Every configured channel, in configuration order.
    *
    * Read fresh on every call rather than captured at apply time: the settings document can be
    * edited while the plugin runs, and `fiber.config` is updated in place by the loader.
+   *
+   * No filtering: the list is what the panel shows AND what the router chooses from. Which one
+   * serves requests is answered solely by `current` — there is no second on/off axis.
    */
   const channels = () => {
     const live = (ctx as unknown as { fiber?: { config?: PluginConfigValue } }).fiber?.config ?? config
-    const map = unwrapChannels(live.channels)
-    const resolution = resolveChannels(map)
-    return enabledChannels(resolution, map)
+    return allChannels(resolveChannels(unwrapChannels(live.channels)))
   }
 
   const current = () => {
@@ -212,6 +213,12 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
         } catch {
           return { configured: false }
         }
+      },
+      // Same resolver as the writer (see `makeRecorder`): a reader that recomputed this
+      // independently could disagree with the file the plugin actually appends to.
+      ledgerDir: () => {
+        const live = (ctx as unknown as { fiber?: { config?: PluginConfigValue } }).fiber?.config ?? config
+        return ledgerDirectory(live.usage?.path)
       },
     })
   }

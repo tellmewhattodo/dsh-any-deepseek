@@ -46,7 +46,6 @@ export interface ChannelConfigInput {
   baseURL?: string
   model?: string
   apiKeyEnv?: string
-  enabled?: boolean
   contextWindow?: number
   maxTokens?: number
   input?: Array<'text' | 'image'>
@@ -68,7 +67,6 @@ export interface ChannelConfigValue {
   readonly baseURL?: string
   readonly model?: string
   readonly apiKeyEnv?: string
-  readonly enabled?: boolean
   readonly contextWindow?: number
   readonly maxTokens?: number
   readonly input?: ReadonlyArray<'text' | 'image'>
@@ -94,7 +92,6 @@ export const ChannelConfigSchema: SchemaOf<ChannelConfigInput, ChannelConfigValu
   baseURL: z.string().description('端点根地址'),
   model: z.string().description('上游模型 id（各家拼写不同，必填）'),
   apiKeyEnv: z.string().description('凭据引用名（环境变量名）；真实 key 存在凭据库里，不落配置'),
-  enabled: z.boolean().default(true).description('是否启用'),
   contextWindow: z.number().description('上下文窗口（tokens）'),
   maxTokens: z.number().description('单次输出上限（tokens）'),
   input: z.array(z.union([z.const('text'), z.const('image')])).description('输入模态'),

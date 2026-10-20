@@ -45,16 +45,16 @@ describe('selectChannel', () => {
     expect(result.failure.code).toBe('NO_CHANNEL_SELECTED')
   })
 
-  // v1 does not fail over. A selection naming something that is not enabled must fail rather
-  // than quietly pick another channel — that silence is exactly what manual mode rules out.
+  // v1 does not fail over. A selection naming a channel that does not exist must fail rather
+  // than quietly pick another one — that silence is exactly what manual mode rules out.
   it('never falls back to another channel', () => {
     const result = selectChannel([channel('a'), channel('b')], 'c')
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.failure.code).toBe('CHANNEL_DISABLED')
+    expect(result.failure.code).toBe('CHANNEL_UNKNOWN')
   })
 
-  it('names the enabled channels in the failure so the fix is obvious', () => {
+  it('names the available channels in the failure so the fix is obvious', () => {
     const result = selectChannel([channel('a'), channel('b')], 'ghost')
     expect(result.ok).toBe(false)
     if (result.ok) return

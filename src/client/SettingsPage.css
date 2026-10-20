@@ -194,31 +194,27 @@
   opacity: 0.5;
 }
 
-.ad-switch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
+/* The channel row is a radio "pick" zone: the whole left side is clickable, and the radio sits
+   at the start of the line so "which one is live" is readable down a single column. */
+.ad-rowPick {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
   cursor: pointer;
 }
 
-.ad-switch input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
+.ad-rowPick input[type='radio'] {
+  flex: none;
+  /* Optically centred against the first text line rather than the row box. */
+  margin-top: 3px;
+  accent-color: var(--dsw-alias-color-accent, #3b82f6);
+  cursor: pointer;
 }
 
-.ad-switchTrack {
-  width: 30px;
-  height: 16px;
-  border-radius: 999px;
-  background: var(--dsw-alias-color-border, rgba(0, 0, 0, 0.2));
-  transition: background 120ms ease;
-}
-
-.ad-switch input:checked + .ad-switchTrack {
-  background: var(--dsw-alias-color-accent, #3b82f6);
-}
+/* The switch is gone: selection is the only axis (see `channels.ts`). Keeping the rules would
+   invite someone to bring the second axis back. */
 
 .ad-tabs {
   display: flex;
@@ -303,6 +299,48 @@
   background: transparent;
   color: inherit;
   font-family: inherit;
+}
+
+/*
+ * 🔴 A native `<select>` cannot be themed with `background: transparent`.
+ *
+ * The popup list is drawn by the OS/browser, not by the element's own box: the options inherit
+ * nothing from the closed control, so a transparent background made them render in the platform
+ * default (light) palette against this dark theme — measured on the real host, 2026-10-21.
+ *
+ * `color-scheme` is what actually tells the engine which palette to use for the popup; the
+ * explicit background/color pair then makes the closed control agree with it. Without both, the
+ * closed box looks themed and the list does not.
+ */
+select.ad-input {
+  color-scheme: dark light;
+  background-color: var(--dsw-alias-color-surface, #1b1b1f);
+  color: inherit;
+  cursor: pointer;
+  padding-right: 22px;
+  /* Room for the chevron, drawn below, so the text never runs under it. */
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 12px) calc(50% + 1px), calc(100% - 8px) calc(50% + 1px);
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+
+select.ad-input:hover:not(:disabled) {
+  border-color: var(--dsw-alias-color-accent, #3b82f6);
+}
+
+select.ad-input:focus-visible {
+  outline: 2px solid var(--dsw-alias-color-accent, #3b82f6);
+  outline-offset: 1px;
+}
+
+select.ad-input option {
+  /* Options are painted inside the popup, which follows `color-scheme`; these keep the
+     background explicit for engines that honour it per-option. */
+  background-color: var(--dsw-alias-color-surface, #1b1b1f);
+  color: inherit;
 }
 
 .ad-fieldError {

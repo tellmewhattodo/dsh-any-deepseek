@@ -15,7 +15,7 @@
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
 import type { SettingsWire } from './index.js'
 import { formatTokens } from './panel-api.js'
@@ -48,22 +48,42 @@ export interface SettingsPageInjected {
 /** The JSON value shapes a settings write accepts. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
-type SettingsPageProps = PropsRuntime<'settings.section'> & InjectFace<SettingsPageInjected>
-
-/** One labelled switch. */
-function Toggle(props: { checked: boolean; disabled?: boolean; onChange: (on: boolean) => void }): React.JSX.Element {
-  return (
-    <label className="ad-switch">
-      <input
-        type="checkbox"
-        checked={props.checked}
-        disabled={props.disabled}
-        onChange={(event) => props.onChange(event.target.checked)}
-      />
-      <span className="ad-switchTrack" />
-    </label>
-  )
+/**
+ * A channel id derived from a preset id, made unique against what already exists.
+ *
+ * The id is a configuration key, so it must match `^[a-z0-9][a-z0-9_-]*$`. Preset ids already do,
+ * so the only work is de-duplication: adding two Open Design relays is legitimate, and the second
+ * must not silently overwrite the first.
+ * @param presetId - the chosen preset.
+ * @param existing - rows already configured.
+ * @returns a free id like `open-design`, `open-design-2`, …
+ */
+export function suggestId(presetId: string, existing: ReadonlyArray<{ id: string }>): string {
+  if (presetId === '') return ''
+  const taken = new Set(existing.map((row) => row.id))
+  if (!taken.has(presetId)) return presetId
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${presetId}-${n}`
+    if (!taken.has(candidate)) return candidate
+  }
+  return `${presetId}-${Date.now()}`
 }
+
+/**
+ * The credential reference name a preset conventionally uses.
+ *
+ * This is a CONVENTION, not a lookup: the reference is just the environment-variable name the
+ * user's key is stored under, and any name works. Pre-filling the conventional one saves typing;
+ * `OPEN_DESIGN` → `OPEN_DESIGN_API_KEY`.
+ * @param presetId - the chosen preset.
+ * @returns the suggested reference name ('' when no preset is chosen).
+ */
+export function suggestKeyRef(presetId: string): string {
+  if (presetId === '') return ''
+  return `${presetId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+}
+
+type SettingsPageProps = PropsRuntime<'settings.section'> & InjectFace<SettingsPageInjected>
 
 /** A status dot: filled when confirmed configured, hollow when confirmed absent, half otherwise. */
 function KeyDot(props: { configured: boolean; known: boolean }): React.JSX.Element {
@@ -97,6 +117,14 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [newId, setNewId] = useState('')
   const [newPreset, setNewPreset] = useState('')
   const [newKeyRef, setNewKeyRef] = useState('')
+  /**
+   * The reference name the form last derived from a preset.
+   *
+   * Needed to tell "the user never touched this field" from "the user typed it": only a value that
+   * still equals the last suggestion may be replaced when the preset changes. Without it,
+   * switching presets after typing a custom reference would silently discard the user's input.
+   */
+  const lastSuggestedKeyRef = useRef('')
 
   const refresh = useCallback(async (): Promise<void> => {
     const [loaded, statsNow] = await Promise.all([loadChannels(), loadStats(group)])
@@ -113,16 +141,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   }, [refresh])
 
   const current = settings.value?.current ?? ''
-  const channels = settings.value?.channels ?? {}
 
   const select = (id: string): void => {
     write(() => setField(['current'], id))
-  }
-
-  const toggleChannel = (id: string, on: boolean): void => {
-    // Path-scoped write: only this channel's `enabled` field, so a concurrent edit to another
-    // channel cannot be clobbered by a whole-section rewrite.
-    write(() => setField(['channels', id, 'enabled'], on), '切换渠道开关失败')
   }
 
   /**
@@ -168,7 +189,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     const id = newId.trim()
     if (id === '') return null
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(id)) return '只能用小写字母、数字、- 和 _，且不能以符号开头'
-    if (channels[id] !== undefined) return '这个 id 已经有了'
+    // Read the ids from the same list the panel renders, so "already exists" can never disagree
+    // with what is on screen.
+    if (rows.some((row) => row.id === id)) return '这个 id 已经有了'
     return null
   })()
 
@@ -181,9 +204,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    */
   const addChannel = (): void => {
     const id = newId.trim()
-    if (id === '' || newIdProblem !== null || newKeyRef.trim() === '') return
+    if (newPreset === '' || id === '' || newIdProblem !== null || newKeyRef.trim() === '') return
+    // One write, one atomic result: the channel entry and the selection are separate documents,
+    // so selecting is a second write — but both are awaited by `write`, and a refusal on either
+    // is surfaced rather than swallowed.
     write(() => setField(['channels', id], {
-      ...newPreset === '' ? {} : { preset: newPreset },
+      preset: newPreset,
       apiKeyEnv: newKeyRef.trim(),
     }), '添加渠道失败')
     // The first channel added to an empty document becomes current: leaving `current` empty
@@ -192,6 +218,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     setNewId('')
     setNewKeyRef('')
     setNewPreset('')
+    lastSuggestedKeyRef.current = ''
     setAdding(false)
   }
 
@@ -205,8 +232,10 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
       <header className="ad-head">
         <h2 className="ad-title">Any DeepSeek</h2>
         <p className="ad-intro">
-          一个模型（{model.name || 'DeepSeek V4.1 Flash'}），多个中转渠道。
-          在下面选定当前渠道；请求只会发到你选中的那一个，不会自动切换。
+          这里定义的是 <strong>any-deepseek 这一个 provider</strong> 的内部渠道，
+          与 DSH 别处的设置无关。本插件对外只暴露一个模型
+          （<span className="ad-mono">{model.name || 'DeepSeek V4.1 Flash'}</span>）；
+          下面勾选哪一个渠道，请求就只发到那一个，不会自动切换。
         </p>
       </header>
 
@@ -219,50 +248,57 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         {rows.length === 0 && (
           <p className="ad-empty">还没有渠道。用下面的表单加一个。</p>
         )}
-        <ul className="ad-rows">
+        <ul className="ad-rows" role="radiogroup" aria-label="选择当前渠道">
           {rows.map((row) => {
-            const enabled = channels[row.id]?.enabled !== false
             const isCurrent = current === row.id
             const probeResult = verdict[row.id]
             return (
               <li key={row.id} className={`ad-row${isCurrent ? ' ad-row-current' : ''}`}>
-                <div className="ad-rowMain">
-                  <div className="ad-rowTitleLine">
-                    <KeyDot configured={row.keyConfigured} known={row.keySource !== undefined || row.keyConfigured} />
-                    <span className="ad-rowTitle">{row.label}</span>
-                    {isCurrent && <span className="ad-badge">当前</span>}
-                    {row.warnings.length > 0 && (
-                      <span className="ad-warn" title={row.warnings.join('\n')}>⚠</span>
+                {/*
+                  The channel list is a RADIO GROUP, not a row of action buttons.
+
+                  "Which relay serves requests" is single-choice — exactly one channel is live, and
+                  there is no second on/off axis (see `channels.ts`: `enabled` is retired). A radio
+                  says that in the affordance itself; a "设为当前" button made the same fact look
+                  like an action, and a separate toggle let the two disagree.
+                */}
+                <label className="ad-rowPick">
+                  <input
+                    type="radio"
+                    name="ad-current-channel"
+                    checked={isCurrent}
+                    onChange={() => select(row.id)}
+                  />
+                  <span className="ad-rowMain">
+                    <span className="ad-rowTitleLine">
+                      <KeyDot configured={row.keyConfigured} known={row.keySource !== undefined || row.keyConfigured} />
+                      <span className="ad-rowTitle">{row.label}</span>
+                      {isCurrent && <span className="ad-badge">当前</span>}
+                      {row.warnings.length > 0 && (
+                        <span className="ad-warn" title={row.warnings.join('\n')}>⚠</span>
+                      )}
+                    </span>
+                    <span className="ad-rowMeta">
+                      <span className="ad-mono">{row.model}</span>
+                      <span className="ad-sep">·</span>
+                      <span>{row.api}</span>
+                      <span className="ad-sep">·</span>
+                      <span className="ad-mono">{row.baseURL}</span>
+                    </span>
+                    {probeResult !== undefined && (
+                      <span className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
+                        {probeResult.ok
+                          ? `通（${probeResult.ms}ms）`
+                          : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
+                      </span>
                     )}
-                  </div>
-                  <div className="ad-rowMeta">
-                    <span className="ad-mono">{row.model}</span>
-                    <span className="ad-sep">·</span>
-                    <span>{row.api}</span>
-                    <span className="ad-sep">·</span>
-                    <span className="ad-mono">{row.baseURL}</span>
-                  </div>
-                  {probeResult !== undefined && (
-                    <div className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
-                      {probeResult.ok
-                        ? `通（${probeResult.ms}ms）`
-                        : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
-                    </div>
-                  )}
-                </div>
+                  </span>
+                </label>
                 <div className="ad-rowActions">
                   <button
                     type="button"
-                    className="ad-btn"
-                    disabled={isCurrent || !enabled}
-                    onClick={() => select(row.id)}
-                  >
-                    {isCurrent ? '使用中' : '设为当前'}
-                  </button>
-                  <button
-                    type="button"
                     className="ad-btn ad-btn-quiet"
-                    disabled={probing === row.id || !enabled}
+                    disabled={probing === row.id}
                     onClick={() => { void runProbe(row.id) }}
                   >
                     {probing === row.id ? '测试中…' : '测试'}
@@ -275,7 +311,6 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   >
                     移除
                   </button>
-                  <Toggle checked={enabled} onChange={(on) => toggleChannel(row.id, on)} />
                 </div>
               </li>
             )
@@ -283,52 +318,63 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         </ul>
 
         {/*
-          Adding is a form, not a JSON editor: the two facts a user must supply are an id and a
-          credential reference, and the endpoint comes from a preset. Showing only those keeps
-          "what do I type" answerable without reading the schema.
+          Adding is a form, not a JSON editor — but it should not ask for facts the plugin can
+          derive. Choosing a preset already determines the endpoint AND the credential reference
+          name, so the form asks for the one thing only the user knows (which preset), then
+          pre-fills the rest and lets them correct it.
         */}
         {adding ? (
           <div className="ad-addForm">
-            <label className="ad-field">
-              <span>渠道 id</span>
-              <input
-                className="ad-input"
-                value={newId}
-                placeholder="例如 opencode-go"
-                onChange={(event) => setNewId(event.target.value)}
-              />
-            </label>
-            {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
             <label className="ad-field">
               <span>规格</span>
               <select
                 className="ad-input"
                 value={newPreset}
-                onChange={(event) => setNewPreset(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value
+                  setNewPreset(next)
+                  // Derive the two fields a preset already answers. Only fill what is still empty
+                  // or was itself derived, so a hand-edited value is never silently overwritten.
+                  setNewId((previous) => (previous === '' || previous === '') ? suggestId(next, rows) : previous)
+                  setNewKeyRef((previous) => (previous === '' || previous === lastSuggestedKeyRef.current)
+                    ? suggestKeyRef(next)
+                    : previous)
+                  lastSuggestedKeyRef.current = suggestKeyRef(next)
+                }}
               >
-                <option value="">自定义（稍后在配置文件里补端点）</option>
+                <option value="">选择规格…</option>
                 {presets.map((preset) => (
                   <option key={preset.id} value={preset.id}>{preset.displayName}</option>
                 ))}
               </select>
             </label>
             <label className="ad-field">
+              <span>渠道 id</span>
+              <input
+                className="ad-input"
+                value={newId}
+                placeholder={newPreset === '' ? '先选上面的规格' : suggestId(newPreset, rows)}
+                onChange={(event) => setNewId(event.target.value)}
+              />
+            </label>
+            {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
+            <label className="ad-field">
               <span>凭据引用名</span>
               <input
                 className="ad-input"
                 value={newKeyRef}
-                placeholder="例如 OPENCODE_GO_API_KEY"
+                placeholder={newPreset === '' ? '例如 OPENCODE_GO_API_KEY' : suggestKeyRef(newPreset)}
                 onChange={(event) => setNewKeyRef(event.target.value)}
               />
             </label>
             <p className="ad-hint">
-              这里填的是**引用名**（环境变量名），不是密钥本身。密钥请通过凭据中心设置。
+              这里填的是<strong>引用名</strong>（环境变量名），不是密钥本身。密钥请通过凭据中心设置。
             </p>
             <div className="ad-rowActions">
               <button
                 type="button"
                 className="ad-btn"
-                disabled={newId.trim() === '' || newIdProblem !== null || newKeyRef.trim() === ''}
+                disabled={newPreset === '' || newId.trim() === '' || newIdProblem !== null || newKeyRef.trim() === ''}
                 onClick={addChannel}
               >
                 添加

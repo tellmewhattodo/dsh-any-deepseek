@@ -19,6 +19,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -83,6 +84,9 @@ function mount(deps: Partial<RouteDeps> = {}): {
     // Mirrors what `apply` wires: the MODEL name, not the provider name.
     advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
     describeKey: async () => ({ configured: true, source: 'store' }),
+    // Point at a directory that does not exist so the panel's "empty book" branch is exercised
+    // without ever touching the real `~/.dsh/any-deepseek` ledger. Tests that need data override it.
+    ledgerDir: () => join(tmpdir(), `any-deepseek-http-test-${process.pid}`, 'absent'),
     ...deps,
   }
 

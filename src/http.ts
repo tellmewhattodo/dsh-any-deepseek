@@ -20,7 +20,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { ResolvedChannel } from './channels.js'
 import { PROVIDER_ID } from './adapter.js'
-import { ledgerDirectory } from './index.js'
 import {
   readLedgerRange,
   summarize,
@@ -34,7 +33,7 @@ export const ROUTE_PREFIX = '/any-deepseek'
 
 /** What the routes need from the plugin. */
 export interface RouteDeps {
-  /** Enabled, resolved channels. */
+  /** Every resolved channel, in configuration order. */
   channels: () => readonly ResolvedChannel[]
   /** Resolve a credential reference to its value. */
   resolveKey: (ref: string) => Promise<string | undefined>
@@ -44,6 +43,16 @@ export interface RouteDeps {
   advertised: () => { id: string; name: string }
   /** Describe a credential reference (never its value). */
   describeKey: (ref: string) => Promise<{ configured: boolean; source?: string }>
+  /**
+   * The ledger directory the plugin actually WRITES to.
+   *
+   * 🔴 This must be passed in, not recomputed. The reader used to call
+   * `ledgerDirectory(undefined)` — which silently dropped the configured `usage.path` — while the
+   * writer used `ledgerDirectory(usage.path)`. Whenever a user set a custom ledger directory the
+   * two pointed at different places, so the panel read an empty book forever and reported
+   * "no usage yet" as though no request had ever run. Read and write must resolve one directory.
+   */
+  ledgerDir: () => string
 }
 
 /** Structural view of the harness web server (only `register` is used). */
@@ -214,7 +223,7 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
         const from = queryDate(url.searchParams.get('from'))
         const to = queryDate(url.searchParams.get('to'))
         const group = url.searchParams.get('group') ?? 'channel'
-        const entries: LedgerEntry[] = await readLedgerRange(ledgerDirectory(undefined), from, to)
+        const entries: LedgerEntry[] = await readLedgerRange(deps.ledgerDir(), from, to)
         const rows = group === 'day'
           ? summarize(entries, (entry) => dayKey(new Date(entry.at)))
           : summarize(entries, (entry) => entry.channel)

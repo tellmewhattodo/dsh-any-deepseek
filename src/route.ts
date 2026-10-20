@@ -21,8 +21,7 @@ import type { ResolvedChannel } from './channels.js'
 /** Why no channel could be selected. */
 export type RouteFailure =
   | { code: 'NO_CHANNEL_SELECTED'; detail: string }
-  | { code: 'UNKNOWN_CHANNEL'; detail: string }
-  | { code: 'CHANNEL_DISABLED'; detail: string }
+  | { code: 'CHANNEL_UNKNOWN'; detail: string }
   | { code: 'NO_CHANNELS'; detail: string }
 
 /** Selection outcome: exactly one of the two arms is present. */
@@ -36,7 +35,11 @@ export type RouteResult =
  * The order of the checks matters for the message the user sees: an empty configuration is a
  * setup problem, while an unset `current` is a choice not yet made. Reporting them separately
  * keeps the panel's guidance accurate.
- * @param channels - enabled, resolved channels in configuration order.
+ *
+ * 🔴 There is no "disabled" branch any more. `current` is the single axis, so a selection either
+ * names a channel that exists or names one that does not — the old `CHANNEL_DISABLED` code
+ * described a state the configuration can no longer express.
+ * @param channels - every resolved channel, in configuration order.
  * @param current - the configured channel id.
  * @returns the selected channel, or the reason there is none.
  */
@@ -49,7 +52,7 @@ export function selectChannel(
       ok: false,
       failure: {
         code: 'NO_CHANNELS',
-        detail: 'no channel is configured and enabled; add one in Settings → any-deepseek',
+        detail: 'no channel is configured; add one in Settings → Any DeepSeek',
       },
     }
   }
@@ -60,7 +63,7 @@ export function selectChannel(
       ok: false,
       failure: {
         code: 'NO_CHANNEL_SELECTED',
-        detail: 'no channel is selected; pick one in Settings → any-deepseek',
+        detail: 'no channel is selected; pick one in Settings → Any DeepSeek',
       },
     }
   }
@@ -68,14 +71,14 @@ export function selectChannel(
   const found = channels.find((channel) => channel.id === wanted)
   if (found !== undefined) return { ok: true, channel: found }
 
-  // Distinguish "that channel exists but is switched off" from "there is no such channel":
-  // the two have different fixes, and a merged message would send the user to the wrong one.
+  // A dangling selection: the id exists in the settings document but no channel resolves to it.
+  // The fix is "pick another one", so the message names the ones that WOULD work.
   return {
     ok: false,
     failure: {
-      code: 'CHANNEL_DISABLED',
-      detail: `selected channel "${wanted}" is not among the enabled channels; `
-        + `enabled: ${channels.map((channel) => channel.id).join(', ')}`,
+      code: 'CHANNEL_UNKNOWN',
+      detail: `selected channel "${wanted}" does not exist; `
+        + `available: ${channels.map((channel) => channel.id).join(', ')}`,
     },
   }
 }

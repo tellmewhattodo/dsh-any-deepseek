@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  enabledChannels,
+  allChannels,
   resolveChannel,
   resolveChannels,
   type ResolvedChannel,
@@ -168,19 +168,31 @@ describe('resolveChannels', () => {
   })
 })
 
-describe('enabledChannels', () => {
-  it('drops channels the user switched off and keeps the rest in order', () => {
+describe('allChannels', () => {
+  it('returns every resolved channel in configuration order', () => {
+    const entries = {
+      a: { preset: 'ollama', apiKeyEnv: 'A' },
+      b: { preset: 'ollama', apiKeyEnv: 'B' },
+      c: { preset: 'ollama', apiKeyEnv: 'C' },
+    }
+    expect(allChannels(resolveChannels(entries)).map((channel) => channel.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('🔴 does NOT hide a channel carrying a legacy `enabled: false`', () => {
+    // `enabled` was retired as a second on/off axis: `current` is the only thing that decides
+    // which relay serves requests. A config that still carries the old flag must keep working —
+    // and the channel must stay VISIBLE, because a hidden channel cannot be selected again.
     const entries = {
       a: { preset: 'ollama', apiKeyEnv: 'A' },
       b: { preset: 'ollama', apiKeyEnv: 'B', enabled: false },
-      c: { preset: 'ollama', apiKeyEnv: 'C' },
     }
-    const resolution = resolveChannels(entries)
-    expect(enabledChannels(resolution, entries).map((channel) => channel.id)).toEqual(['a', 'c'])
+    expect(allChannels(resolveChannels(entries)).map((channel) => channel.id)).toEqual(['a', 'b'])
   })
 
-  it('keeps a channel whose enabled flag is merely absent', () => {
-    const entries = { a: { preset: 'ollama', apiKeyEnv: 'A' } }
-    expect(enabledChannels(resolveChannels(entries), entries)).toHaveLength(1)
+  it('omits channels that failed to resolve (they are reported separately)', () => {
+    const entries = { a: { preset: 'ollama', apiKeyEnv: 'A' }, bad: { preset: 'nope', apiKeyEnv: 'B' } }
+    const resolution = resolveChannels(entries)
+    expect(allChannels(resolution).map((channel) => channel.id)).toEqual(['a'])
+    expect(resolution.problems).toHaveLength(1)
   })
 })

@@ -56,7 +56,6 @@ export interface ChannelWire {
   baseURL?: string
   model?: string
   apiKeyEnv?: string
-  enabled?: boolean
 }
 
 /** The plugin's settings section value. */

@@ -38,7 +38,16 @@ export interface ChannelEntry {
   model?: string
   /** Credential reference (environment-variable name). Required. */
   apiKeyEnv?: string
-  /** Whether the panel offers this channel. Absent means enabled. */
+  /**
+   * @deprecated Retired. Kept in the schema only so an existing configuration that still carries
+   * the field does not fail validation; it is **ignored**.
+   *
+   * The design has exactly one axis for "which relay serves requests": `current`. A second
+   * on/off axis says the same thing twice and can contradict itself — a channel that is
+   * `enabled` but not `current` does nothing, and one that is `current` but disabled is a
+   * straight incoherence. Removing the axis also removes a whole class of UI state: there is no
+   * such thing as a "closed channel" to render greyed out.
+   */
   enabled?: boolean
   /** Overrides applied on top of a preset, or the whole declaration for a custom channel. */
   contextWindow?: number
@@ -297,23 +306,19 @@ export function resolveChannels(entries: unknown): ChannelResolution {
 }
 
 /**
- * Channels that should appear and serve requests: resolved AND not explicitly disabled.
+ * Every resolved channel, in configuration order — the panel's list and the router's candidate set.
+ *
+ * 🔴 There is no filtering step here, deliberately. This used to be `enabledChannels()`, which
+ * dropped entries with `enabled: false`. That made two things impossible:
+ *   · the panel could not show a channel it had hidden, so you could not switch it back on;
+ *   · "which relay serves requests" had two answers (`enabled` AND `current`) that could disagree.
+ * The design has one axis — `current` — so the only list is "all channels", and selection is a
+ * separate fact.
  * @param resolution - output of {@link resolveChannels}.
- * @param entries - the same configuration map, read again for the `enabled` flags.
- * @returns enabled channels, configuration order preserved.
+ * @returns all resolved channels (the router picks one of them via `current`).
  */
-export function enabledChannels(
-  resolution: ChannelResolution,
-  entries: unknown,
-): ResolvedChannel[] {
-  const out: ResolvedChannel[] = []
-  const map = isPlainObject(entries) ? entries : {}
-  for (const [id, channel] of resolution.channels) {
-    const raw = map[id]
-    const disabled = isPlainObject(raw) && raw.enabled === false
-    if (!disabled) out.push(channel)
-  }
-  return out
+export function allChannels(resolution: ChannelResolution): ResolvedChannel[] {
+  return [...resolution.channels.values()]
 }
 
 /** The advertised model id, re-exported so callers need one import for routing facts. */
