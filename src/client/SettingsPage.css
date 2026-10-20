@@ -1,11 +1,28 @@
-/* Panel styles. Uses the harness's alias tokens where they exist, plain values otherwise, so
-   the page follows the surrounding theme instead of hardcoding a palette. */
+/* Panel styles.
+ *
+ * 🔴 There are NO `--dsw-alias-*` design tokens on this host (measured 2026-10-21: the document
+ * declares 29 custom properties and not one is a colour). This file used to reference a dozen of
+ * them, every one falling back to a hardcoded LIGHT value (`rgba(0,0,0,0.12)` and friends) — so
+ * on the dark theme the borders and dividers were effectively invisible.
+ *
+ * ⇒ Derive everything from `currentColor`, which the host sets per theme. `color-mix` gives the
+ * low-contrast borders and fills that a token would have provided, and it follows the theme
+ * automatically instead of assuming one palette.
+ */
 
 .ad-page {
   display: flex;
   flex-direction: column;
   gap: 20px;
   padding: 4px 2px 12px;
+}
+
+/* One place to change the two theme-derived values the whole panel uses. */
+.ad-page {
+  --ad-line: color-mix(in srgb, currentColor 18%, transparent);
+  --ad-line-strong: color-mix(in srgb, currentColor 32%, transparent);
+  --ad-fill-subtle: color-mix(in srgb, currentColor 7%, transparent);
+  --ad-danger: #e5534b;
 }
 
 .ad-head {
@@ -28,7 +45,7 @@
 }
 
 .ad-error {
-  border: 1px solid var(--dsw-alias-color-danger, #c0392b);
+  border: 1px solid var(--ad-danger);
   border-radius: 6px;
   padding: 8px 10px;
   font-size: 12px;
@@ -63,13 +80,13 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.12));
+  border: 1px solid var(--ad-line);
   border-radius: 8px;
   padding: 10px 12px;
 }
 
 .ad-row-current {
-  border-color: var(--dsw-alias-color-accent, #3b82f6);
+  border-color: var(--ad-line-strong);
 }
 
 .ad-rowMain {
@@ -134,7 +151,7 @@
   font-size: 11px;
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  border: 1px solid var(--ad-line);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -209,7 +226,7 @@
   flex: none;
   /* Optically centred against the first text line rather than the row box. */
   margin-top: 3px;
-  accent-color: var(--dsw-alias-color-accent, #3b82f6);
+  accent-color: var(--ad-line-strong);
   cursor: pointer;
 }
 
@@ -225,14 +242,14 @@
   font-size: 11px;
   padding: 3px 10px;
   border-radius: 999px;
-  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  border: 1px solid var(--ad-line);
   background: transparent;
   color: inherit;
   cursor: pointer;
 }
 
 .ad-tab-on {
-  border-color: var(--dsw-alias-color-accent, #3b82f6);
+  border-color: var(--ad-line-strong);
   font-weight: 600;
 }
 
@@ -250,7 +267,7 @@
 .ad-table th,
 .ad-table td {
   padding: 5px 8px;
-  border-bottom: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.08));
+  border-bottom: 1px solid var(--ad-line);
   text-align: left;
 }
 
@@ -275,7 +292,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px dashed var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  border: 1px dashed var(--ad-line);
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -295,30 +312,40 @@
   font-size: 11px;
   padding: 4px 8px;
   border-radius: 6px;
-  border: 1px solid var(--dsw-alias-color-border, rgba(0, 0, 0, 0.16));
+  border: 1px solid var(--ad-line);
   background: transparent;
   color: inherit;
   font-family: inherit;
 }
 
 /*
- * 🔴 A native `<select>` cannot be themed with `background: transparent`.
+ * 🔴 A native `<select>` cannot be themed by leaving the background transparent.
  *
- * The popup list is drawn by the OS/browser, not by the element's own box: the options inherit
- * nothing from the closed control, so a transparent background made them render in the platform
- * default (light) palette against this dark theme — measured on the real host, 2026-10-21.
+ * The popup list is drawn by the browser, not by the closed control's box: the options inherit
+ * nothing from it, so `background: transparent` made them render in the platform default (light)
+ * palette against this dark theme — reported by the owner and measured on the real host.
  *
- * `color-scheme` is what actually tells the engine which palette to use for the popup; the
- * explicit background/color pair then makes the closed control agree with it. Without both, the
- * closed box looks themed and the list does not.
+ * 🔴 SECOND correction (measured 2026-10-21): this file used `var(--dsw-alias-color-*, #fallback)`
+ * throughout, and **none of those variables exist**. The host declares only 29 custom properties
+ * in total and not one is a colour token, so every `var()` here was falling back — and a fallback
+ * that happens to be set inside a shorthand can be silently dropped (the select's background
+ * computed to `rgba(0,0,0,0)`, i.e. still transparent, which is exactly the bug).
+ *
+ * ⇒ Use only values this file controls, derived from `currentColor` (the host sets a light text
+ * colour on both themes) plus explicit translucent layers. No host token is assumed.
  */
 select.ad-input {
+  /* Tells the engine which palette to use for the popup. This part DID work. */
   color-scheme: dark light;
-  background-color: var(--dsw-alias-color-surface, #1b1b1f);
+  /*
+   * Paint the closed box with a layer that follows the surrounding text colour, so it matches
+   * whichever theme is active instead of hardcoding a dark value into a light theme.
+   */
+  background-color: color-mix(in srgb, currentColor 8%, transparent);
   color: inherit;
   cursor: pointer;
   padding-right: 22px;
-  /* Room for the chevron, drawn below, so the text never runs under it. */
+  /* Room for the chevron drawn below, so text never runs under it. */
   appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
     linear-gradient(135deg, currentColor 50%, transparent 50%);
@@ -328,19 +355,22 @@ select.ad-input {
 }
 
 select.ad-input:hover:not(:disabled) {
-  border-color: var(--dsw-alias-color-accent, #3b82f6);
+  background-color: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 select.ad-input:focus-visible {
-  outline: 2px solid var(--dsw-alias-color-accent, #3b82f6);
+  outline: 2px solid currentColor;
   outline-offset: 1px;
 }
 
+/*
+ * The popup itself follows `color-scheme`; these keep the option rows explicit for engines that
+ * honour per-option colours. `color-scheme: dark` above is what actually stops the light-on-dark
+ * list, because the popup is native chrome rather than a styled element.
+ */
 select.ad-input option {
-  /* Options are painted inside the popup, which follows `color-scheme`; these keep the
-     background explicit for engines that honour it per-option. */
-  background-color: var(--dsw-alias-color-surface, #1b1b1f);
-  color: inherit;
+  background-color: Canvas;
+  color: CanvasText;
 }
 
 .ad-fieldError {
@@ -356,6 +386,6 @@ select.ad-input option {
 
 .ad-btn-danger:hover:not(:disabled) {
   opacity: 1;
-  border-color: var(--dsw-alias-color-danger, #c0392b);
-  color: var(--dsw-alias-color-danger, #c0392b);
+  border-color: var(--ad-danger);
+  color: var(--ad-danger);
 }
