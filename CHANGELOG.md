@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.0.5
+
+### 变更（语义）
+
+- 🔴 **渠道列表改成单选列表；`enabled` 这根轴整根退休。**
+  `any-deepseek` 在 DSH 层是**一个 provider**，内部渠道全由本面板定义 —— "哪个渠道生效"
+  只有 `current` 一个答案。原来的 `enabled` 把同一个问题问了第二遍，还能自相矛盾
+  （启用但非当前 = 什么都不做；当前但禁用 = 无意义）。
+  - 连带删掉：schema 的 `enabled` 字段、`enabledChannels()` 过滤、路由错误码 `CHANNEL_DISABLED`。
+  - 现在的列表函数叫 `allChannels()`：**不隐藏任何已解析的渠道**。
+  - 🔴 **这条修的是一个真实可见的症状**：旧版会把 `enabled: false` 的渠道从 `/channels` 里
+    过滤掉，于是面板上**一条都不显示**，而那个渠道也就永远没有机会被重新选中。
+
+### 修复
+
+- 🔴 **`/stats` 读的账本与写的不一致**：读侧调 `ledgerDirectory(undefined)`，
+  **把用户配置的 `usage.path` 丢了**；写侧用的是 `ledgerDirectory(usage.path)`。
+  只要改过账本目录，面板就永远显示「还没有用量记录」。现在两侧由 `apply` 注入同一个解析器。
+- 🔴 **面板 CSS 引用了 12 处不存在的设计变量**：实测该宿主的文档只声明 29 个自定义属性、
+  **没有一个颜色**，所以 `var(--dsw-alias-color-*, #fallback)` 全部走 fallback，
+  而 fallback 是**硬编码浅色** ⇒ 深色主题下边框与分割线等于看不见。
+  面板现在自定义 `--ad-line` / `--ad-fill`（`color-mix` + `currentColor`），**不依赖宿主任何 token**。
+- 🔴 **原生 `<select>` 弹层浅底深色字**：透明背景 + 死 fallback ⇒ 弹层用平台默认浅色调色板。
+  改用 `color-scheme: dark light` + 自绘 chevron + 跟随文字色的背景层。
+
+### 交互
+
+- **添加表单只问必须问的**：规格改为**必选**，选完自动带出**渠道 id**（去重：第二个
+  `open-design` → `open-design-2`）与**凭据引用名**（`open-design` → `OPEN_DESIGN_API_KEY`）。
+  手填过的值切规格时**不会被覆盖**（按"是否仍等于上次推导值"判断）。
+- 渠道行整块可点选（radio），行尾只保留「测试」「移除」两个真动作。
+
 ## v0.0.4
 
 ### 修复
