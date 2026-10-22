@@ -1,6 +1,6 @@
 {
   "name": "dsh-any-deepseek",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "One DeepSeek V4.1 Flash provider for DeepSeek Harness: paste a key per channel, switch channels manually, token usage booked per real upstream.",
   "license": "MIT",
   "repository": {
