@@ -16,9 +16,9 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
+import type { BalanceResponse, BalanceRow, ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
 import type { SettingsWire } from './index.js'
-import { formatDuration, formatSpeed, formatTokens } from './panel-api.js'
+import { formatBalance, formatDuration, formatSpeed, formatTokens } from './panel-api.js'
 import './SettingsPage.css'
 
 /** What the plugin's `apply` hands this component. */
@@ -31,6 +31,14 @@ export interface SettingsPageInjected {
   }>
   loadStats: (group: 'channel' | 'day', from?: string, to?: string) => Promise<StatsResponse>
   probe: (id: string) => Promise<ProbeResult>
+  /**
+   * Read every channel's remaining balance.
+   *
+   * Separate from {@link loadChannels} because it hits the PROVIDERS' account surfaces, which can
+   * be slow or absent; keeping it out of the channel load means a dead billing endpoint cannot
+   * delay the list the user actually came to edit.
+   */
+  loadBalances: () => Promise<BalanceResponse>
   /**
    * Write one value at a real path.
    *
@@ -86,13 +94,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   // The reserved `hooks` compartment never reaches us either: the renderer strips it and
   // re-emits each member as a bound `use<Name>` selector hook (`bindInjectSources`).
   // So `hooks: { settings: form }` arrives here as `useSettings`.
-  const { useSettings, loadChannels, loadStats, probe, setField, removeField } = props
+  const { useSettings, loadChannels, loadStats, probe, loadBalances, setField, removeField } = props
   const settings = useSettings((snapshot) => snapshot)
 
   const [rows, setRows] = useState<ChannelRow[]>([])
   const [presets, setPresets] = useState<Array<{ id: string; displayName: string }>>([])
   const [model, setModel] = useState<{ id: string; name: string }>({ id: '', name: '' })
   const [stats, setStats] = useState<StatsResponse | null>(null)
+  /**
+   * Per-channel balance, keyed by channel id.
+   *
+   * Loaded separately from the channel list (see `loadBalances`): the balances hit each provider's
+   * own account surface, so one slow or dead endpoint must not hold up the table the user came to
+   * edit. An empty map simply means "not loaded yet", and the cell renders as such.
+   */
+  const [balances, setBalances] = useState<Record<string, BalanceRow>>({})
+  const [balancesLoading, setBalancesLoading] = useState(false)
   const [group, setGroup] = useState<'channel' | 'day'>('channel')
   const [probing, setProbing] = useState<string | null>(null)
   const [verdict, setVerdict] = useState<Record<string, ProbeResult>>({})
@@ -137,6 +154,25 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     setModel(loaded.model)
     setStats(statsNow)
   }, [loadChannels, loadStats, group])
+
+  /**
+   * Load balances on demand, never on render.
+   *
+   * Each call reaches out to every provider's account surface, so it is a button rather than
+   * something that fires on mount: opening the panel to rename a channel should not spend a
+   * round-trip per relay, and one unreachable billing endpoint would otherwise hold the table.
+   */
+  const refreshBalances = useCallback(async (): Promise<void> => {
+    setBalancesLoading(true)
+    try {
+      const loaded = await loadBalances()
+      const byId: Record<string, BalanceRow> = {}
+      for (const row of loaded.channels) byId[row.id] = row
+      setBalances(byId)
+    } finally {
+      setBalancesLoading(false)
+    }
+  }, [loadBalances])
 
   useEffect(() => {
     void refresh().catch((cause: unknown) => {
@@ -329,7 +365,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
       )}
 
       <section className="ad-section">
-        <h3 className="ad-sectionTitle">渠道</h3>
+        <div className="ad-sectionBar">
+          <h3 className="ad-sectionTitle">渠道</h3>
+          {/*
+            On demand, because it calls out to every provider's account surface. The label says
+            余额 rather than 刷新 so it is clear this may spend a round-trip per relay — and that
+            some relays will answer "不支持查询", which is information too.
+          */}
+          <button
+            type="button"
+            className="ad-link"
+            disabled={balancesLoading || rows.length === 0}
+            onClick={() => { void refreshBalances() }}
+          >
+            {balancesLoading ? '查询余额中…' : '查询余额'}
+          </button>
+        </div>
         {rows.length === 0 && (
           <p className="ad-empty">还没有渠道。用下面的表单加一个。</p>
         )}
@@ -474,6 +525,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                         >
                           {keying === row.id ? '取消' : '填写密钥'}
                         </button>
+                      </span>
+                    )}
+                    {/*
+                      Remaining balance, when this endpoint exposes one.
+
+                      🔴 Three different silences, kept distinct: `undefined` = not fetched yet
+                      (nothing shown), `unsupported` = the endpoint has no balance API, `unavailable`
+                      = it has one but did not answer. None of them is rendered as a number,
+                      because "0.00" would read as "you are out of credit".
+
+                      Fetched on demand via the 查询余额 button — not on mount — so opening the panel
+                      to rename something does not fan out a request to every relay.
+                    */}
+                    {balances[row.id] !== undefined && (
+                      <span className="ad-keyLine">
+                        <span className="ad-balance">{formatBalance(balances[row.id] as BalanceRow)}</span>
                       </span>
                     )}
                     {keying === row.id && (

@@ -30,9 +30,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { SettingsPage, SettingsPageInjected, type JsonValue } from './SettingsPage.js'
 import {
+  fetchBalances,
   fetchChannels,
   fetchStats,
   probeChannel,
+  type BalanceResponse,
   type ChannelRow,
   type StatsResponse,
 } from './panel-api.js'
@@ -92,6 +94,7 @@ export function apply(ctx: ClientContext): void {
                   loadStats: (group: 'channel' | 'day', from?: string, to?: string): Promise<StatsResponse> =>
                     fetchStats(group, from, to),
                   probe: (id: string) => probeChannel(id),
+                  loadBalances: (): Promise<BalanceResponse> => fetchBalances(),
                   setField: (path: readonly string[], value: JsonValue): Promise<boolean> => {
                     // 🔴 `ConfigForm.set(field, value)` builds `path: [field]` — ONE segment. A
                     // dotted string therefore writes a literal key named "channels.go.enabled"

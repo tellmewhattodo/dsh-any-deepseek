@@ -32,6 +32,37 @@ export type ChannelApi = 'openai-completions' | 'openai-responses' | 'anthropic-
 export type ChannelModality = 'text' | 'image'
 
 /**
+ * How to read one endpoint's remaining balance.
+ *
+ * Owner request (2026-10-23): 「其它渠道的查看方式你需要找到并实现它们的」. There is no single
+ * answer — every provider invented its own surface, and some have none at all. This type is that
+ * fact written down instead of guessed: a preset either names a known shape or says it has none.
+ *
+ * Three shapes were verified against real endpoints (see `balance.ts` for the response mapping):
+ *  · `deepseek`  — DeepSeek's own `GET /user/balance`.
+ *  · `ollama`    — `GET /api/balance` (note: under `/api`, NOT the `/v1` used for inference).
+ *  · `openai-billing` — the OpenAI-legacy billing pair that new-api / one-api relays clone:
+ *    `GET /v1/dashboard/billing/subscription` + `GET /v1/dashboard/billing/usage`.
+ *
+ * 🔴 **A fourth answer is legitimate and must be representable: "this endpoint has no balance
+ * API".** OpenCode Zen is exactly that case — its owner has an open feature request asking for
+ * one, because today the only key-authenticated signal is the error thrown at $0
+ * (anomalyco/opencode#44189). Pretending otherwise would mean showing a number nobody measured.
+ */
+export interface BalanceProbe {
+  /** Which response shape to read. */
+  shape: 'deepseek' | 'ollama' | 'openai-billing'
+  /**
+   * Overrides the base URL for the balance call.
+   *
+   * Needed because the surface does not always live under the inference path: Ollama infers on
+   * `/v1` but reports balance on `/api`, and DeepSeek infers on `/v1` (implicitly) but reports on
+   * the bare origin. Resolved against the channel's own `baseURL` when absent.
+   */
+  baseURL?: string
+}
+
+/**
  * One relay's fixed facts.
  *
  * A preset is *data*: it says what the endpoint is and how it must be spoken to. Anything a
@@ -63,6 +94,14 @@ export interface ChannelPreset {
   compat?: Record<string, unknown>
   /** Headers every request to this relay carries. Never secrets. */
   headers?: Record<string, string>
+  /**
+   * How to read this endpoint's remaining balance.
+   *
+   * Absent means "this endpoint has no balance API we know of" — a real and common state, not an
+   * omission. The panel says so explicitly rather than leaving a blank cell that could be read
+   * as zero.
+   */
+  balance?: BalanceProbe
   /** One-line note for the panel, when the relay needs explaining. */
   note?: string
 }
@@ -215,7 +254,14 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     ...V41_FLASH_CAPS,
     compat: { ...DEEPSEEK_THINKING_COMPAT },
     headers: { ...OPENCODE_HEADERS },
-    note: 'Requires the OpenCode session headers; shipped with the preset.',
+    // 🔴 NO balance probe, and that is a MEASURED fact rather than an omission.
+    // `GET /zen/go/v1/usage` returns Go-subscription usage WINDOWS only; the workspace credit
+    // balance (`BillingTable.balance`, shown on the console billing page) is reachable solely
+    // through an authenticated browser session, not with an API key. The provider has an open
+    // request to expose it (anomalyco/opencode#44189) because today the only key-authenticated
+    // signal is the error thrown at $0. ⇒ Leave absent; do not invent a number.
+    note: 'Requires the OpenCode session headers; shipped with the preset. '
+      + 'No balance API (subscription usage only).',
   },
   commandcode: {
     displayName: 'CommandCode',
@@ -225,6 +271,8 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     model: 'deepseek/deepseek-v4.1-flash',
     ...V41_FLASH_CAPS,
     compat: { ...DEEPSEEK_THINKING_COMPAT },
+    // Unverified: no published billing surface was found for this relay. Absent means the panel
+    // will say "no balance API" rather than guess at a shape and report a wrong number.
   },
   ollama: {
     displayName: 'Ollama Cloud',
@@ -232,6 +280,10 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     baseURL: 'https://ollama.com/v1',
     model: 'deepseek-v4.1-flash',
     ...V41_FLASH_CAPS,
+    // 🔴 `/api/balance`, not `/v1/balance`: Ollama's inference lives under `/v1` but its account
+    // surface is the native `/api` tree (docs.ollama.com/api/balance). Reporting the inference
+    // baseURL here would 404.
+    balance: { shape: 'ollama', baseURL: 'https://ollama.com' },
   },
   'open-design': {
     displayName: 'Open Design',
@@ -239,6 +291,10 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     baseURL: 'https://amr-link.open-design.ai/v1',
     model: 'deepseek-v4.1-flash',
     ...V41_FLASH_CAPS,
+    // Probed live: the new-api/one-api billing pair answers on this relay. The panel still treats
+    // a 404 as "no balance API" rather than an error, so a relay that drops the surface degrades
+    // to an honest "not available" instead of a broken row.
+    balance: { shape: 'openai-billing' },
   },
   'deepseek-official': {
     displayName: 'DeepSeek Official',
@@ -256,6 +312,9 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     // carries the spelling ITS endpoint accepts, and the advertised id never reaches the wire.
     model: 'deepseek-flash',
     ...V41_FLASH_CAPS,
+    // `GET /user/balance` on the bare origin — no `/v1` prefix (api-docs.deepseek.com/api/
+    // get-user-balance).
+    balance: { shape: 'deepseek' },
   },
 }
 

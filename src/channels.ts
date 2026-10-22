@@ -21,6 +21,7 @@ import {
   DEFAULT_MAX_TOKENS,
   type ChannelApi,
   type ChannelModality,
+  type BalanceProbe,
   presetById,
 } from './presets.js'
 
@@ -103,6 +104,13 @@ export interface ResolvedChannel {
   reasoningEfforts?: Record<string, string | null>
   compat?: Record<string, unknown>
   headers?: Record<string, string>
+  /**
+   * How this endpoint's remaining balance can be read, when it can be.
+   *
+   * Absent means "no balance API" — a real state, not a missing value. See `presets.ts` for the
+   * three verified shapes and why OpenCode Go deliberately has none.
+   */
+  balance?: BalanceProbe
   /** Facts the user should see because a default was applied rather than declared. */
   warnings: string[]
 }
@@ -353,6 +361,9 @@ export function resolveChannel(
       ...mergeHeaders(preset?.headers, entry.headers) === undefined
         ? {}
         : { headers: mergeHeaders(preset?.headers, entry.headers) as Record<string, string> },
+      // Carried through so the panel can ask "what does this endpoint report" without knowing
+      // the preset table — and so a channel's own override can later replace it in one place.
+      ...preset?.balance === undefined ? {} : { balance: preset.balance },
       warnings,
     },
   }

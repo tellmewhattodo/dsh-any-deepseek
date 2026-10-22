@@ -105,6 +105,101 @@ export interface ProbeResult {
   responded?: string
 }
 
+/** One currency amount, as a balance surface reports it. */
+export interface BalanceAmount {
+  currency: string
+  remaining: number
+  allowance?: number
+  granted?: number
+  toppedUp?: number
+}
+
+/** A percentage window (Ollama's legacy plans meter this way instead of money). */
+export interface BalanceWindow {
+  name: string
+  remainingPercent: number
+  resetsAt?: string
+}
+
+/**
+ * One channel's balance row.
+ *
+ * 🔴 The four statuses are deliberately distinct because they call for different actions:
+ *  · `ok`          — a number was read;
+ *  · `unsupported` — this endpoint has no balance API at all (OpenCode Go today);
+ *  · `unavailable` — it has one, but it did not answer as expected;
+ *  · `no-key`      — we never got to ask.
+ * Collapsing any of them into "0" would claim the account is empty, which is the one reading
+ * that would make someone stop using a channel that is fine.
+ */
+export type BalanceRow =
+  | {
+    id: string
+    label: string
+    status: 'ok'
+    reading: {
+      amounts: BalanceAmount[]
+      windows: BalanceWindow[]
+      available?: boolean
+      note?: string
+    }
+  }
+  | { id: string; label: string; status: 'unsupported' | 'unavailable' | 'no-key'; detail: string; code?: string }
+
+/** `/any-deepseek/balance` response. */
+export interface BalanceResponse {
+  channels: BalanceRow[]
+}
+
+/**
+ * Load per-channel balances.
+ *
+ * Degrades to an empty list rather than throwing: the panel must still render the channel table
+ * when this route is missing (an older server, or a deployment without it).
+ */
+export async function fetchBalances(): Promise<BalanceResponse> {
+  try {
+    const response = await fetch(`${BASE}/balance`, { headers: { accept: 'application/json' } })
+    if (!response.ok) return { channels: [] }
+    return (await response.json()) as BalanceResponse
+  } catch {
+    return { channels: [] }
+  }
+}
+
+/**
+ * Render one balance row as the text a person reads.
+ *
+ * Deliberately total: every status produces words, never an empty string. A blank cell beside a
+ * working channel is indistinguishable from "zero balance" — the one thing this must never imply.
+ * @param row - one row from `/balance`.
+ * @returns a short human label.
+ */
+export function formatBalance(row: BalanceRow): string {
+  // Narrow on the discriminant FIRST. The three non-`ok` arms carry no `reading`, and separate
+  // early returns for them do not narrow the union for TypeScript — it still sees `reading` as
+  // possibly-absent further down.
+  if (row.status !== 'ok') {
+    if (row.status === 'no-key') return '未配置密钥'
+    if (row.status === 'unavailable') return row.code === 'HTTP_404' ? '不支持查询' : '读取失败'
+    return '不支持查询'
+  }
+  const { amounts, windows, available } = row.reading
+  const parts: string[] = []
+  for (const amount of amounts) {
+    // Two decimals for money: these surfaces quote cents, and rounding to whole units hides the
+    // exact margin a low-balance warning exists to show.
+    parts.push(`${amount.remaining.toFixed(2)} ${amount.currency}`)
+  }
+  for (const window of windows) {
+    parts.push(`${window.name} ${Math.round(window.remainingPercent)}%`)
+  }
+  // `is_available:false` is the provider saying calls will begin failing — worth one word.
+  if (available === false) parts.push('（余额不足）')
+  if (parts.length === 0) return row.reading.note ?? '无可读数值'
+  return parts.join(' · ')
+}
+
 const BASE = '/any-deepseek'
 
 /**

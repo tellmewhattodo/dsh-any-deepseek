@@ -437,6 +437,29 @@ select.ad-input option {
   color: #b7791f;
 }
 
+/*
+ * Remaining balance.
+ *
+ * Same line shape as the key state — it is another fact about this channel, not a control. The
+ * subtle fill marks it as a measurement (like `ad-keyName`) rather than a warning: the words
+ * themselves say whether it is fine ("72.50 USD") or not ("（余额不足）").
+ */
+.ad-balance {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--ad-fill-subtle);
+}
+
+/* A section heading with one action on its right (currently: 查询余额). */
+.ad-sectionBar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 /* The reference name, not a secret: monospace so it lines up and misreads as a name, not a value. */
 .ad-keyName {
   font-size: 10px;

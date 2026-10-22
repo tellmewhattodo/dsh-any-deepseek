@@ -129,9 +129,10 @@ function mount(deps: Partial<RouteDeps> = {}): {
 }
 
 describe('route surface', () => {
-  it('registers channels, stats and probe under one prefix', () => {
+  it('registers channels, stats, probe and balance under one prefix', () => {
     const { routes } = mount()
     expect(routes.sort()).toEqual([
+      `${ROUTE_PREFIX}/balance`,
       `${ROUTE_PREFIX}/channels`,
       `${ROUTE_PREFIX}/probe`,
       `${ROUTE_PREFIX}/stats`,

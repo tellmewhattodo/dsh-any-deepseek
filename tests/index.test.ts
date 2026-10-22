@@ -202,11 +202,12 @@ describe('provider registration', () => {
 })
 
 describe('http routes', () => {
-  it('registers the three panel routes under one prefix', () => {
+  it('registers the four panel routes under one prefix', () => {
     const { ctx, spy } = fakeContext()
     apply(ctx, config())
 
     expect(spy.routes.map((route) => route.path).sort()).toEqual([
+      '/any-deepseek/balance',
       '/any-deepseek/channels',
       '/any-deepseek/probe',
       '/any-deepseek/stats',

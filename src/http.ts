@@ -21,6 +21,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ResolvedChannel } from './channels.js'
 import { PROVIDER_ID, requestHeadersFor } from './adapter.js'
 import {
+  balanceUrls,
+  readBalance,
+  type BalanceReading,
+} from './balance.js'
+import {
   readLedgerRange,
   summarize,
   totalOf,
@@ -280,6 +285,87 @@ export function reportedName(text: string): string {
   return ''
 }
 
+/**
+ * Fetch one channel's remaining balance from whatever surface it declares.
+ *
+ * 🔴 **Absence is a normal answer here, and is reported as such.** Three outcomes are kept apart
+ * because they mean different things to the user:
+ *  · `unsupported` — the preset declares no balance shape (OpenCode Go: the provider has an open
+ *    request for one, because today the only key-authenticated signal is an error at $0).
+ *  · `unavailable` — a shape was declared but the endpoint did not answer as expected (404,
+ *    non-JSON, unexpected body). The relay may simply not implement it.
+ *  · `ok` — a reading, which itself may carry only a note (e.g. "unlimited, used $3.20").
+ *
+ * A missing number is never coerced to zero: "we could not read it" and "it is empty" lead to
+ * opposite actions, and only one of them is true.
+ * @param channel - the resolved channel.
+ * @param key - its resolved credential.
+ * @param signal - cancellation.
+ * @returns the outcome, always resolved (never thrown) so one dead relay cannot blank the row.
+ */
+export async function fetchBalance(
+  channel: ResolvedChannel,
+  key: string,
+  signal?: AbortSignal,
+): Promise<
+  | { status: 'ok'; reading: BalanceReading }
+  | { status: 'unsupported'; detail: string }
+  | { status: 'unavailable'; detail: string; code?: string }
+> {
+  if (channel.balance === undefined) {
+    return {
+      status: 'unsupported',
+      detail: 'this endpoint exposes no balance API',
+    }
+  }
+  const urls = balanceUrls(channel.balance, channel.baseURL)
+  const bodies: unknown[] = []
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          ...channel.api === 'anthropic-messages'
+            ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+            : { authorization: `Bearer ${key}` },
+          // Some relays only answer the billing surface when their own client header is present;
+          // the preset's headers are the ones that proved necessary for inference, so they travel.
+          ...channel.headers,
+        },
+        ...signal === undefined ? {} : { signal },
+      })
+      const text = await response.text()
+      if (!response.ok) {
+        return {
+          status: 'unavailable',
+          code: `HTTP_${response.status}`,
+          detail: `balance endpoint answered HTTP ${response.status}`,
+        }
+      }
+      try {
+        bodies.push(JSON.parse(text))
+      } catch {
+        return { status: 'unavailable', detail: 'balance endpoint did not return JSON' }
+      }
+    } catch (error) {
+      return {
+        status: 'unavailable',
+        code: 'TRANSPORT',
+        detail: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+  const reading = readBalance(channel.balance, bodies)
+  if (reading === undefined) {
+    return {
+      status: 'unavailable',
+      detail: 'the endpoint replied, but not in the shape this balance API uses',
+    }
+  }
+  return { status: 'ok', reading }
+}
+
 /** Map an HTTP status from a probe onto the same codes the runtime uses. */
 function probeCode(status: number, body: string): string {
   if (status === 401 || status === 403) return 'AUTH'
@@ -447,6 +533,35 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
         // consecutive probes comparable.
         const verdict = await probeChannel(channel, key, `probe:${channel.id}`)
         json(res, verdict.ok ? 200 : 502, verdict)
+      },
+    },
+    {
+      /**
+       * Remaining balance per channel.
+       *
+       * GET because it reads and costs nothing at the provider (all three surfaces are plain
+       * account reads, not model calls). Every channel is attempted independently: one relay
+       * without a balance API, or one that is down, must not blank the others — the same rule the
+       * channel list follows for a broken entry.
+       */
+      kind: 'exact',
+      path: `${ROUTE_PREFIX}/balance`,
+      handler: async (_req, res) => {
+        const channels = deps.channels()
+        const rows = await Promise.all(channels.map(async (channel) => {
+          const key = channel.credential.kind === 'literal'
+            ? channel.credential.value
+            : channel.credential.kind === 'reference'
+              ? await deps.resolveKey(channel.credential.ref)
+              : undefined
+          if (key === undefined || key === '') {
+            // No key means we cannot ask AT ALL — distinct from "the endpoint has no such API".
+            return { id: channel.id, label: channel.label, status: 'no-key' as const, detail: 'no key configured' }
+          }
+          const outcome = await fetchBalance(channel, key)
+          return { id: channel.id, label: channel.label, ...outcome }
+        }))
+        json(res, 200, { channels: rows })
       },
     },
   ]
