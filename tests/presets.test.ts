@@ -61,13 +61,14 @@ describe('presets', () => {
     expect(Object.hasOwn(preset?.headers ?? {}, 'x-opencode-client')).toBe(true)
   })
 
-  it('🔴 declares image input only where the adapter can actually deliver bytes', () => {
-    // An `ImageBlock` carries an attachmentId, not bytes: turning it into a request image needs
-    // the durable attachment service. Until this adapter consults it, declaring `image` would
-    // make the harness stop substituting its placeholder text and drop the image silently —
-    // strictly worse than declaring text. This assertion flips when the image path lands.
+  it('🔴 every preset declares image input, and the adapter can actually deliver bytes', () => {
+    // An `ImageBlock` carries an attachmentId, not bytes, so declaring `image` is only honest once
+    // the adapter resolves those bytes through the attachment store. Both halves are asserted:
+    // the declaration here, the delivery path in the adapter tests. Declaring without delivering
+    // was a measured failure — a screenshot reached the plugin and the model answered as though
+    // the message had been text only.
     for (const [id, preset] of Object.entries(CHANNEL_PRESETS)) {
-      expect(preset.input, id).toEqual(['text'])
+      expect(preset.input, id).toContain('image')
     }
   })
 

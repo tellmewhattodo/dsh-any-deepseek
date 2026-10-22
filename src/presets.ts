@@ -94,17 +94,18 @@ export const DEFAULT_MAX_TOKENS = 32_768
  * Kept as one constant because these are properties of the *model*, not of a relay; a relay
  * that disagrees corrects them in its own preset.
  *
- * ⚠️ `input` is `['text']` **on purpose, for now**. The model is multimodal, but declaring image
- * support is a promise this adapter cannot keep yet: a harness `ImageBlock` carries only an
- * `attachmentId`, and turning that into bytes requires the durable attachment service
- * (`ctx.attachments.readImageRequest`), which the adapter does not consult. Declaring images
- * without that path would be worse than declaring text — the harness would stop substituting its
- * placeholder text and the image would be silently dropped. See SESSION decision 38.
+ * ## Why `input` lists image
+ *
+ * The model is multimodal, and the harness only projects an image into a request when the model
+ * entry declares the capability. Declaring text-only therefore did not mean "we never send
+ * images" — it meant the user's image never reached the model at all, silently. The relay side is
+ * now real: `adapter.ts` collects image bytes through the durable attachment store and maps them
+ * to pi-ai `image` content, and falls back to a visible text placeholder when it cannot.
  */
 const V41_FLASH_CAPS = {
   contextWindow: 1_000_000,
   maxTokens: 384_000,
-  input: ['text'] as ChannelModality[],
+  input: ['text', 'image'] as ChannelModality[],
   /**
    * Selectable thinking levels, in pi-ai's vocabulary.
    *
@@ -135,21 +136,12 @@ const DEEPSEEK_THINKING_COMPAT = {
 } as const
 
 /**
- * Headers the OpenCode Go endpoint requires, MINUS the session id.
+ * Static headers the OpenCode Go endpoint wants on every request.
  *
- * `/zen/go` answers 400 `Request is missing x-opencode-session` without it, and the official
- * documentation adds two requirements this preset has to respect:
- *
- *  1. the session id must be **stable per conversation** — a constant shared by every
- *     conversation violates the thing the header exists for (routing and cache affinity);
- *  2. the client must **identify itself with its own user agent** rather than a generic SDK name.
- *
- * So the session id is deliberately NOT here: `adapter.ts` injects it per request from the
- * harness's own session identity. What stays here is the static identity of this client.
- *
- * ⚠️ The upstream documentation lists **DeepSeek Harness as a known-problematic client** for this
- * endpoint ("session information arrives on some model paths, but is missing on others"). Even
- * with everything here correct, expect this relay to be stricter than the others.
+ * The session id is NOT here on purpose — it is injected per request, because the endpoint wants
+ * it stable *per conversation* rather than per install. What lives here is the client identity,
+ * which does not vary. See {@link OPENCODE_SESSION_FALLBACK} for what happens when the harness
+ * gives us no session at all.
  */
 const OPENCODE_HEADERS = {
   'x-opencode-client': 'dsh',
@@ -159,12 +151,29 @@ const OPENCODE_HEADERS = {
 /**
  * The user agent a request to OpenCode Go identifies itself with.
  *
- * Requirement 2 above: a generic SDK name is exactly what they ask clients not to send.
+ * The upstream asks clients to identify themselves rather than send a generic SDK name.
  */
 export const CLIENT_USER_AGENT = 'dsh-any-deepseek/1.0'
 
 /** Header carrying the per-conversation routing id on OpenCode Go. */
 export const OPENCODE_SESSION_HEADER = 'x-opencode-session'
+
+/**
+ * Session id used when the harness gives us none.
+ *
+ * 🔴 **This fallback is load-bearing, not decoration**, and dropping it is a measured failure.
+ *
+ * The endpoint wants a per-conversation id, so the honest implementation is "use the harness's
+ * `sessionId`". The problem is that the harness does not stamp one on every request — and when it
+ * does not, an implementation that ONLY reads `options.sessionId` sends **no session header at
+ * all**, which the endpoint rejects with 400 `MissingSessionID`: precisely the failure the header
+ * exists to prevent. So the value is "harness session when present, this constant otherwise".
+ *
+ * A constant is a worse affinity key than a real per-session id and a far better one than none:
+ * it still gives the upstream one consistent key per install. That is the same trade the sibling
+ * `dsh-serenity-hooks` plugin made for the same endpoint, proved on a real host.
+ */
+export const OPENCODE_SESSION_FALLBACK = 'dsh-any-deepseek'
 
 /**
  * Presets keyed by a stable id.

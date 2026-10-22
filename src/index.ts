@@ -164,10 +164,48 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
     return typeof value === 'string' ? value : undefined
   }
 
+  /**
+   * Read one image's request bytes from the harness attachment store.
+   *
+   * 🔴 This is the host seam, not something this plugin invents: a harness `ImageBlock` carries
+   * only an `attachmentId`, and `readImageRequest` is the documented way to turn that into bytes.
+   * Without this path the model cannot receive an image no matter what `input` declares — which
+   * was exactly this plugin's state until now, and why a screenshot the user sent never arrived.
+   *
+   * The target bounds are the store's own normalization request, not a guess about the relay:
+   * 2048px keeps the harness's normal form, and the byte ceiling is the one the host's pi-ai
+   * adapter uses for the same purpose.
+   */
+  const readImage = async (attachmentId: string, mediaType: string): Promise<{ data: string; mediaType: string } | undefined> => {
+    const attachments = service<{
+      readImageRequest?: (
+        ref: { attachmentId: string; mediaType: string },
+        target: { width: number; height: number; maxBytes: number },
+      ) => Promise<{ data: Uint8Array; mediaType: string }>
+    }>(ctx, 'attachments')
+    if (attachments?.readImageRequest === undefined) return undefined
+    try {
+      const stored = await attachments.readImageRequest(
+        { attachmentId, mediaType },
+        { width: 2048, height: 2048, maxBytes: 4 * 1024 * 1024 },
+      )
+      if (stored?.data === undefined) return undefined
+      return {
+        data: Buffer.from(stored.data).toString('base64'),
+        mediaType: stored.mediaType ?? mediaType,
+      }
+    } catch (error) {
+      // A read failure degrades to the text placeholder; it must never fail the request.
+      console.warn(`[any-deepseek] 读不到图片 ${attachmentId}: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
+
   const deps = {
     channels,
     current,
     resolveKey,
+    readImage,
     record: makeRecorder(ctx, config),
     now: () => new Date(),
     elapsed: () => Number(process.hrtime.bigint() / 1_000_000n),

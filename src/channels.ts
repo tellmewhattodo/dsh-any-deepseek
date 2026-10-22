@@ -342,12 +342,49 @@ export function resolveChannel(
       ...(entry.compat ?? preset?.compat) === undefined
         ? {}
         : { compat: (entry.compat ?? preset?.compat) as Record<string, unknown> },
-      ...(entry.headers ?? preset?.headers) === undefined
+      /**
+       * 🔴 Headers MERGE per key; they do not replace.
+       *
+       * `entry.headers ?? preset?.headers` treated the two as alternatives, so a user who added
+       * one header of their own silently lost the preset's — and for OpenCode Go those are the
+       * headers the endpoint refuses requests without. Merging keeps the preset's required set
+       * and lets the entry win only on the keys it actually names.
+       */
+      ...mergeHeaders(preset?.headers, entry.headers) === undefined
         ? {}
-        : { headers: (entry.headers ?? preset?.headers) as Record<string, string> },
+        : { headers: mergeHeaders(preset?.headers, entry.headers) as Record<string, string> },
       warnings,
     },
   }
+}
+
+/**
+ * Merge preset headers with entry headers, the entry winning per key.
+ *
+ * HTTP field names are case-insensitive, so a user writing `X-Session-ID` must override a
+ * preset's `x-session-id` rather than appearing alongside it as a second header — sending both
+ * would leave the upstream to pick one, which is exactly the ambiguity the header exists to
+ * resolve.
+ * @param preset - headers the preset declares.
+ * @param entry - headers the entry declares.
+ * @returns the merged set, or undefined when neither side declares any.
+ */
+function mergeHeaders(
+  preset: Record<string, string> | undefined,
+  entry: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (entry === undefined) return preset === undefined ? undefined : { ...preset }
+  if (preset === undefined) return { ...entry }
+  const merged: Record<string, string> = {}
+  for (const [name, value] of Object.entries(preset)) merged[name] = value
+  for (const [name, value] of Object.entries(entry)) {
+    // Drop any preset spelling that differs only by case, then write the entry's own spelling.
+    for (const existing of Object.keys(merged)) {
+      if (existing !== name && existing.toLowerCase() === name.toLowerCase()) delete merged[existing]
+    }
+    merged[name] = value
+  }
+  return merged
 }
 
 /**

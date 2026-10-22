@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.7
+## v0.0.8
 
 ### 修复（owner 2026-10-22 一次报六条）
 
@@ -36,13 +36,31 @@
   添加表单带出预设名可改；每行有「改名」入口。**改名只动 `label`，绝不动 id**——id 是渠道身份，
   改了就变成另一个渠道（另一个 key、另一个 current 目标）。
 
-### 明确不做
+### 多模态（owner 反证后补上）
 
-- **图片输入仍然声明为 text-only**。模型是多模态的，但宿主 `ImageBlock` 只带
-  `attachmentId` 不含字节，要发出去必须走 `ctx.attachments.readImageRequest()`（宿主的
-  pi-ai adapter 就是这么做的），**本适配器还没有这条路**。此时声明 image 会让宿主停止用
-  占位文本替代，而图片被**静默丢掉** —— 比声明 text-only 更坏。
-  ⇒ 能力声明必须能被实际路径兑现；接 attachments 通路列为独立后续项。
+- 🔴 **图片现在真的能到达模型了**。同一版本的更早一次改动曾声明 `text-only`，理由是「取字节的
+  通路还没接」—— 而 owner 用它发图时**看不到图**，正是那条声明的直接后果：`input` 不含
+  `image` 时，宿主根本不会把图片投影进来。
+  - 三处落地：① 预设 `input` 含 `image`；② 新增 `collectImages()` 异步预取字节（转换本身是
+    同步的），`userContent()` 把块映射成 pi-ai 的 `{type:'image', data:base64, mimeType}`；
+    ③ `index.ts` 注入 `readImage`，走宿主的 `ctx.attachments.readImageRequest()`（宿主自己的
+    pi-ai adapter 同款路径）。
+  - 🔴 **读不到字节时不静默丢弃**，换成可见文本占位（"an image was attached … could not read
+    its bytes"）。原缺陷的形态正是「用户发了图，模型当纯文本回答」——静默比报错更糟。
+  - 附件服务缺失 / 单张读取失败都只降级为占位，**绝不失败整条请求**。
+
+### opencode session 头的两次修正
+
+- 第一次修法是**错的**：把预设里的静态 session 删掉、改成只读 `options.sessionId` —— 而宿主
+  **并不总给这个字段**，于是请求**一个 session 头都不带**，仍然 400 `MissingSessionID`。
+- 正解：`opencodeSessionId(session)` —— 有会话 id 就取 sha256 前 32 位（稳定、不透明、按会话
+  变化），没有就回退常量。两条硬要求：**永不缺席**、**无会话时也稳定**。
+- 归属明确：`/zen/go` 是某一家 relay 的私有要求，**必须我们自己传**，宿主不会也不该为此负责。
+
+### 顺带修的真缺陷
+
+- **`headers` 改为按 key 合并**（原为整体替换）：用户加一个自己的 header 会**整体丢掉预设的
+  必填 header**（opencode 正好靠那两个头才能用）。合并时按 HTTP 语义**大小写不敏感**去重。
 
 ## v0.0.6
 

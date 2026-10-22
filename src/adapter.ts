@@ -36,6 +36,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createHash } from 'node:crypto'
 import {
   createModels,
   createProvider,
@@ -50,7 +51,7 @@ import {
 // OpenAI SDK load to the first request, which is why the plugin boots quickly.
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
-import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_HEADER } from './presets.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
 import type { LedgerEntry } from './usage-ledger.js'
@@ -76,6 +77,19 @@ export interface AdapterDeps {
   resolveKey: (ref: string) => Promise<string | undefined>
   /** Record one finished request. Must never throw. */
   record: (entry: LedgerEntry) => Promise<void>
+  /**
+   * Read one image's request bytes from the durable attachment store.
+   *
+   * 🔴 Optional, and its absence is a real state (a composition without the attachment service).
+   * An `ImageBlock` in the harness carries only an `attachmentId` — never bytes — so without this
+   * seam an image cannot be sent at all. When it is missing, image content is replaced by a text
+   * placeholder rather than silently dropped: the model should know an image existed even when it
+   * cannot see it.
+   * @param attachmentId - durable id from the message block.
+   * @param mediaType - the block's declared media type.
+   * @returns base64 bytes and the media type to put on the wire.
+   */
+  readImage?: (attachmentId: string, mediaType: string) => Promise<{ data: string; mediaType: string } | undefined>
   /** Clock, injectable so tests are deterministic. */
   now: () => Date
   /** Monotonic-ish millisecond clock for durations. */
@@ -87,6 +101,30 @@ interface CallOutcome {
   ok: boolean
   code?: string
   usage: TokenUsage | null
+}
+
+/**
+ * Derive the value for the OpenCode session header.
+ *
+ * 🔴 This is THIS PLUGIN's job, not the harness's. `/zen/go` is one relay's private requirement;
+ * the host cannot know about it and must not be expected to stamp anything for it. Whatever the
+ * harness happens to put on a request is only an input to a decision made here.
+ *
+ * The id is a stable hash of the harness session id, so:
+ *  · the same conversation keeps one affinity key (what the endpoint wants), and
+ *  · the value is opaque rather than echoing an internal id to a third party.
+ *
+ * Two hard requirements, both learned from a 400:
+ *  · **never absent** — the header is always sent, so a request can never go out without it;
+ *  · **stable when there is no session** — falling back to a random value would give every
+ *    request a different affinity key, which is worse than a constant.
+ * @param sessionId - the harness session id, when it supplied one.
+ * @returns a stable, non-empty session id.
+ */
+export function opencodeSessionId(sessionId: unknown): string {
+  const raw = sessionId === undefined || sessionId === null ? '' : String(sessionId).trim()
+  if (raw === '') return OPENCODE_SESSION_FALLBACK
+  return createHash('sha256').update(raw).digest('hex').slice(0, 32)
 }
 
 /**
@@ -134,15 +172,63 @@ export function buildPiModel(channel: ResolvedChannel): Model<Api> {
   }
 }
 
+/** One resolved image, keyed by attachment id. */
+export type ImageBytes = Map<string, { data: string; mediaType: string }>
+
+/**
+ * Collect the bytes for every image in a request.
+ *
+ * 🔴 A separate pass, because the conversion itself is synchronous and the store is not. This is
+ * also how the host's own pi-ai adapter does it, for the same reason.
+ *
+ * A block that cannot be read is left OUT of the map, and the converter then substitutes a text
+ * placeholder. That is deliberate: dropping the block would tell the model nothing, while a
+ * placeholder at least says an image was attached and names why it could not be shown. Skipping
+ * it silently is the failure mode this whole change exists to remove — the user sent an image and
+ * the model answered as though the message had been text only.
+ * @param options - the harness request.
+ * @param readImage - the attachment seam, when the composition has one.
+ * @returns resolved images keyed by attachment id.
+ */
+export async function collectImages(
+  options: GenerateOptions,
+  readImage: AdapterDeps['readImage'],
+): Promise<ImageBytes> {
+  const images: ImageBytes = new Map()
+  if (readImage === undefined) return images
+  const pending: Array<{ id: string; mediaType: string }> = []
+  for (const message of options.messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      const candidate = block as { type?: string; attachment?: { attachmentId?: string; mediaType?: string } }
+      if (candidate.type !== 'image') continue
+      const id = candidate.attachment?.attachmentId
+      const mediaType = candidate.attachment?.mediaType
+      if (typeof id !== 'string' || typeof mediaType !== 'string') continue
+      if (images.has(id)) continue
+      pending.push({ id, mediaType })
+    }
+  }
+  const resolved = await Promise.all(pending.map(async (item) => {
+    try {
+      return [item.id, await readImage(item.id, item.mediaType)] as const
+    } catch {
+      // A failed read is a missing image, not a failed request: the placeholder path covers it.
+      return [item.id, undefined] as const
+    }
+  }))
+  for (const [id, value] of resolved) if (value !== undefined) images.set(id, value)
+  return images
+}
+
 /**
  * Translate one harness request into a pi-ai context.
  *
- * The harness already projects images and files before an adapter sees them, so this is a
- * straightforward content mapping; anything the harness did not project is passed through.
  * @param options - the harness request.
+ * @param images - image bytes collected by {@link collectImages}; omitted for a text-only request.
  * @returns a pi-ai context plus the one-shot system prompt, when the caller set one.
  */
-export function toPiContext(options: GenerateOptions): PiContext {
+export function toPiContext(options: GenerateOptions, images?: ImageBytes): PiContext {
   const messages = options.messages.map((message) => {
     if (message.role === 'assistant') {
       return {
@@ -182,7 +268,7 @@ export function toPiContext(options: GenerateOptions): PiContext {
       }
     }    return {
       role: 'user' as const,
-      content: textAndImages(message.content),
+      content: userContent(message.content, images),
       timestamp: 0,
     }
   })
@@ -220,16 +306,49 @@ function safeJson(raw: string): Record<string, never> {
   }
 }
 
-/** Map harness content blocks to pi-ai text/image blocks. */
-function textAndImages(content: readonly unknown[]): Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> {
-  const out: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = []
+/** A text or image block, in pi-ai's shape. */
+type WireContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+
+/**
+ * Map one user message's blocks to pi-ai content.
+ *
+ * 🔴 An image block carries an `attachmentId`, never bytes — so it can only become an image when
+ * {@link collectImages} resolved it. When it did not, the block becomes a TEXT PLACEHOLDER rather
+ * than disappearing: the model should be told an image was attached and that it could not be
+ * read. The previous version dropped such blocks entirely, which is how a user's screenshot
+ * reached the plugin and the model answered as though the message had been text only.
+ * @param content - harness content blocks.
+ * @param images - resolved image bytes, when any were collected.
+ * @returns pi-ai content blocks.
+ */
+function userContent(content: readonly unknown[], images?: ImageBytes): WireContent[] {
+  const out: WireContent[] = []
   for (const block of content) {
-    const typed = block as { type?: string; text?: string }
+    const typed = block as {
+      type?: string
+      text?: string
+      attachment?: { attachmentId?: string; mediaType?: string; name?: string; offloaded?: true }
+      offloaded?: true
+    }
     if (typed.type === 'text' && typeof typed.text === 'string') {
       out.push({ type: 'text', text: typed.text })
+      continue
     }
-    // Images arrive already projected by the harness for text-only routes; a durable image
-    // reference cannot be turned into bytes here, so it is skipped rather than guessed at.
+    if (typed.type !== 'image') continue
+    const id = typed.attachment?.attachmentId
+    const resolved = typeof id === 'string' ? images?.get(id) : undefined
+    if (resolved !== undefined) {
+      out.push({ type: 'image', data: resolved.data, mimeType: resolved.mediaType })
+      continue
+    }
+    // The harness already replaced this image with its own placeholder when it offloaded it; a
+    // second one would only add noise.
+    if (typed.offloaded === true || typed.attachment?.offloaded === true) continue
+    const name = typed.attachment?.name === undefined ? '' : ` (${typed.attachment.name})`
+    out.push({
+      type: 'text',
+      text: `[an image was attached${name}, but this route could not read its bytes]`,
+    })
   }
   return out
 }
@@ -622,10 +741,12 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
      *
      * Two things OpenCode Go requires cannot live in a preset, because neither is a constant:
      *
-     *  · `x-opencode-session` must be STABLE PER CONVERSATION. A single shared literal satisfied
-     *    the letter of "send the header" while defeating its purpose (routing and prompt-cache
-     *    affinity), which is why the previous preset's fixed value produced 400s. The harness
-     *    already stamps every request with `sessionId`; that is the correct source.
+     *  · `x-opencode-session` must be STABLE PER CONVERSATION, and it must ALWAYS be present.
+     *    Both halves matter, and getting only the first produced a 400: an earlier version read
+     *    `options.sessionId` and sent nothing when it was absent — and the harness does not stamp
+     *    one on every request. So the value is a stable hash of the harness session id when we
+     *    have one, and a constant when we do not. A hash keeps the id opaque while staying stable
+     *    for the same conversation, which is all the endpoint's affinity key needs.
      *  · `User-Agent` must identify THIS client rather than the generic SDK. pi-ai sets its own,
      *    so the preset's static headers alone can never satisfy that rule.
      */
@@ -634,11 +755,9 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     // Keying off it (rather than the channel id or the base URL) keeps the rule in one place: the
     // preset that declares the endpoint is the preset that declares its requirements.
     if (channel.headers !== undefined && Object.hasOwn(channel.headers, 'x-opencode-client')) {
-      const session = options.sessionId === undefined ? undefined : String(options.sessionId)
-      if (session !== undefined && session !== '') {
-        requestHeaders[OPENCODE_SESSION_HEADER] = session
-        requestHeaders['X-Session-ID'] = session
-      }
+      const session = opencodeSessionId(options.sessionId)
+      requestHeaders[OPENCODE_SESSION_HEADER] = session
+      requestHeaders['X-Session-ID'] = session
       requestHeaders['User-Agent'] = CLIENT_USER_AGENT
     }
 
@@ -655,7 +774,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     }
 
     try {
-      const events = models.streamSimple(model, toPiContext(options), streamOptions)
+      // 🔴 Images are collected BEFORE the conversion, because the conversion is synchronous and
+      // the attachment store is not. Skipping this step is what made "the model can see images"
+      // false while the panel said the model was multimodal.
+      const images = await collectImages(options, this.deps.readImage)
+      const events = models.streamSimple(model, toPiContext(options, images), streamOptions)
       for await (const chunk of toStreamChunks(events, (observed) => { outcome = observed })) {
         yield chunk
       }

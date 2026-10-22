@@ -1,15 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai'
 import {
   AnyDeepSeekAdapter,
   PROVIDER_ID,
   buildPiModel,
   classifyFailure,
+  collectImages,
+  opencodeSessionId,
+  toPiContext,
   toStreamChunks,
   toTokenUsage,
   type AdapterDeps,
 } from '../src/adapter.js'
-import { ADVERTISED_MODEL_ID } from '../src/presets.js'
+import { ADVERTISED_MODEL_ID, OPENCODE_SESSION_FALLBACK } from '../src/presets.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import type { LedgerEntry } from '../src/usage-ledger.js'
 
@@ -314,5 +317,103 @@ describe('AdapterDeps contract', () => {
       elapsed: () => 0,
     }
     expect(typeof deps.record).toBe('function')
+  })
+})
+
+describe('image input', () => {
+  // 🔴 The defect these pin: `input` declared text-only AND the converter dropped image blocks
+  // outright, so a user's screenshot reached the plugin and the model answered as though the
+  // message had been text only. Two independent halves must hold — the declaration, and a
+  // delivery path that turns an attachment id into bytes.
+
+  /** A harness user message carrying one image block. */
+  function imageRequest(): unknown {
+    return {
+      provider: PROVIDER_ID,
+      model: ADVERTISED_MODEL_ID,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          {
+            type: 'image',
+            attachment: { attachmentId: 'att-1', mediaType: 'image/png', bytes: 10, width: 4, height: 4, name: 'shot.png' },
+          },
+        ],
+      }],
+    }
+  }
+
+  it('🔴 maps a resolved image to pi-ai image content (base64 + mime)', () => {
+    const images = new Map([['att-1', { data: 'QUJD', mediaType: 'image/png' }]])
+    const context = toPiContext(imageRequest() as never, images)
+    const user = context.messages[0] as unknown as { content: Array<Record<string, unknown>> }
+    expect(user.content).toContainEqual({ type: 'image', data: 'QUJD', mimeType: 'image/png' })
+    expect(user.content).toContainEqual({ type: 'text', text: 'look at this' })
+  })
+
+  it('🔴 substitutes a VISIBLE placeholder when the bytes could not be read', () => {
+    // Not silence: the model must be able to say "I was sent an image I could not read" instead
+    // of answering a question about something it never knew existed.
+    const context = toPiContext(imageRequest() as never, new Map())
+    const user = context.messages[0] as unknown as { content: Array<Record<string, unknown>> }
+    expect(user.content.some((block) => block.type === 'image')).toBe(false)
+    const text = user.content.map((block) => String(block.text ?? '')).join(' ')
+    expect(text).toContain('could not read its bytes')
+  })
+
+  it('collects bytes for every image through the attachment seam', async () => {
+    const readImage = vi.fn(async () => ({ data: 'QUJD', mediaType: 'image/png' }))
+    const images = await collectImages(imageRequest() as never, readImage)
+    expect(readImage).toHaveBeenCalledWith('att-1', 'image/png')
+    expect(images.get('att-1')).toEqual({ data: 'QUJD', mediaType: 'image/png' })
+  })
+
+  it('🔴 a failed image read does not fail the request', async () => {
+    // A broken store must degrade the message to text, never turn a conversation into an error.
+    const readImage = vi.fn(async () => { throw new Error('store offline') })
+    const images = await collectImages(imageRequest() as never, readImage)
+    expect(images.size).toBe(0)
+  })
+
+  it('does nothing when the composition has no attachment service', async () => {
+    const images = await collectImages(imageRequest() as never, undefined)
+    expect(images.size).toBe(0)
+  })
+})
+
+describe('opencode session header', () => {
+  it('🔴 derives a stable, non-empty id from the harness session', () => {
+    // 🔴 This plugin's job, not the harness's: `/zen/go` is one relay's private requirement, so
+    // nothing upstream will ever stamp it for us.
+    const a = opencodeSessionId('session-abc')
+    expect(opencodeSessionId('session-abc')).toBe(a)
+    expect(a).not.toBe('')
+    // Opaque rather than echoing the harness's own id to a third party.
+    expect(a).not.toBe('session-abc')
+    // Different conversations get different keys, which is what the header is FOR.
+    expect(opencodeSessionId('session-xyz')).not.toBe(a)
+  })
+
+  it('🔴 ALWAYS returns a value — a missing session must not mean a missing header', () => {
+    // Measured failure: reading `options.sessionId` and sending nothing when absent produced 400
+    // `MissingSessionID` — the exact error the header exists to prevent. A constant is a worse
+    // affinity key than a real per-session id and far better than none.
+    expect(opencodeSessionId(undefined)).toBe(OPENCODE_SESSION_FALLBACK)
+    expect(opencodeSessionId('')).toBe(OPENCODE_SESSION_FALLBACK)
+    expect(opencodeSessionId('   ')).toBe(OPENCODE_SESSION_FALLBACK)
+  })
+})
+
+describe('thinking level passthrough', () => {
+  it('🔴 the model carries a thinking map, minus levels the relay does not support', () => {
+    // The map is what gives a selected level a wire spelling; without it a level is a name with
+    // nothing to send.
+    const model = buildPiModel(channel({ reasoningEfforts: { low: 'low', high: 'high' } }))
+    expect(model.thinkingLevelMap).toEqual({ low: 'low', high: 'high' })
+
+    // A level mapped to null means "explicitly unsupported" and must NOT be advertised.
+    const filtered = buildPiModel(channel({ reasoningEfforts: { low: 'low', off: null } }))
+    expect(filtered.thinkingLevelMap).toEqual({ low: 'low' })
   })
 })
