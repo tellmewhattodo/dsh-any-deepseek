@@ -93,12 +93,33 @@ export const DEFAULT_MAX_TOKENS = 32_768
  *
  * Kept as one constant because these are properties of the *model*, not of a relay; a relay
  * that disagrees corrects them in its own preset.
+ *
+ * ⚠️ `input` is `['text']` **on purpose, for now**. The model is multimodal, but declaring image
+ * support is a promise this adapter cannot keep yet: a harness `ImageBlock` carries only an
+ * `attachmentId`, and turning that into bytes requires the durable attachment service
+ * (`ctx.attachments.readImageRequest`), which the adapter does not consult. Declaring images
+ * without that path would be worse than declaring text — the harness would stop substituting its
+ * placeholder text and the image would be silently dropped. See SESSION decision 38.
  */
 const V41_FLASH_CAPS = {
   contextWindow: 1_000_000,
   maxTokens: 384_000,
   input: ['text'] as ChannelModality[],
-  reasoningEfforts: { low: 'low', high: 'high', max: 'max' } as Record<string, string | null>,
+  /**
+   * Selectable thinking levels, in pi-ai's vocabulary.
+   *
+   * The VALUES are the wire spellings this model family accepts (`reasoning_effort`); `null`
+   * would mark a level as unsupported. pi-ai consumes this map directly as `thinkingLevelMap`,
+   * which is why this plugin does not implement a translation layer of its own — a second
+   * mapping would inevitably drift from the one the transport actually applies.
+   */
+  reasoningEfforts: {
+    off: null,
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    max: 'max',
+  } as Record<string, string | null>,
 }
 
 /**
@@ -114,18 +135,36 @@ const DEEPSEEK_THINKING_COMPAT = {
 } as const
 
 /**
- * Header family the OpenCode Go endpoint requires.
+ * Headers the OpenCode Go endpoint requires, MINUS the session id.
  *
- * `/zen/go` answers 400 `Request is missing x-opencode-session` without it. The values are
- * static on purpose: the header is resolved once per route, so a per-request value would
- * either change nothing or silently change the cache key.
+ * `/zen/go` answers 400 `Request is missing x-opencode-session` without it, and the official
+ * documentation adds two requirements this preset has to respect:
+ *
+ *  1. the session id must be **stable per conversation** — a constant shared by every
+ *     conversation violates the thing the header exists for (routing and cache affinity);
+ *  2. the client must **identify itself with its own user agent** rather than a generic SDK name.
+ *
+ * So the session id is deliberately NOT here: `adapter.ts` injects it per request from the
+ * harness's own session identity. What stays here is the static identity of this client.
+ *
+ * ⚠️ The upstream documentation lists **DeepSeek Harness as a known-problematic client** for this
+ * endpoint ("session information arrives on some model paths, but is missing on others"). Even
+ * with everything here correct, expect this relay to be stricter than the others.
  */
 const OPENCODE_HEADERS = {
-  'x-opencode-session': 'dsh-any-deepseek',
-  'X-Session-ID': 'dsh-any-deepseek',
   'x-opencode-client': 'dsh',
   'x-opencode-project': 'global',
 } as const
+
+/**
+ * The user agent a request to OpenCode Go identifies itself with.
+ *
+ * Requirement 2 above: a generic SDK name is exactly what they ask clients not to send.
+ */
+export const CLIENT_USER_AGENT = 'dsh-any-deepseek/1.0'
+
+/** Header carrying the per-conversation routing id on OpenCode Go. */
+export const OPENCODE_SESSION_HEADER = 'x-opencode-session'
 
 /**
  * Presets keyed by a stable id.

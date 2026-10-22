@@ -110,11 +110,18 @@ describe('add-channel form', () => {
     // Pre-filling endpoint fields would freeze today's preset values into the user's document,
     // so later preset fixes would never reach them. The key, by contrast, is exactly what the
     // user has and the panel cannot derive — so it goes straight into the entry.
-    expect(page).toContain("setField(['channels', id], {")
+    expect(page).toContain("setField(['channels', id], entry)")
     expect(page).toContain('apiKey: newSecret.trim()')
     // No invented reference name may reappear: that was the design the owner rejected.
     expect(page).not.toContain('suggestKeyRef')
     expect(page).not.toContain('apiKeyEnv:')
+  })
+
+  it('🔴 writes the display name only when the user changed it', () => {
+    // Leaving `label` out lets the preset's name apply and keep tracking preset changes; writing
+    // the same string back would freeze today's name into the user's document.
+    const page = pageSource()
+    expect(page).toContain('if (label !== \'\') entry.label = label')
   })
 
   it('makes the first added channel current', () => {
@@ -243,6 +250,97 @@ describe('the panel takes the KEY and stores it on the channel', () => {
     expect(body).toMatch(/keyKind:\s*'literal' \| 'reference' \| 'none'/)
     // `keyRef` survives only for the reference case, and is therefore optional.
     expect(body).toMatch(/keyRef\?:\s*string/)
+  })
+})
+
+describe('what the owner reported, pinned as assertions', () => {
+  // Four complaints came in at once (2026-10-22), and none of them had a test. Each one is a
+  // behaviour the panel claimed to have and did not, which is exactly the class of defect a
+  // source-reading test can hold still.
+
+  it('🔴 a successful write RE-READS — adding or removing must show up without reopening', () => {
+    // The rows come from `/any-deepseek/channels`, computed from the configuration, not pushed.
+    // Any write that does not re-read leaves the panel showing the document from BEFORE the
+    // write. The fix is centralised in `write()` so a new write path inherits it, instead of
+    // depending on each call site remembering.
+    const page = pageSource()
+    const write = page.slice(page.indexOf('const write = (run: () => Promise<boolean>'))
+    const body = write.slice(0, write.indexOf('\n  }'))
+    expect(body).toContain('void refresh()')
+    // …and only on the ACCEPTED branch: a refused write has nothing to re-read.
+    const acceptedBranch = body.slice(0, body.indexOf('(cause: unknown)'))
+    expect(acceptedBranch).toContain('void refresh()')
+    // The delete path must not have to remember anything of its own.
+    const remove = page.slice(page.indexOf('const removeChannel = (id: string)'))
+    const removeBody = remove.slice(0, remove.indexOf('\n  }'))
+    expect(removeBody).not.toContain('refresh()')
+  })
+
+  it('🔴 the current channel is marked beyond a small badge', () => {
+    const page = pageSource()
+    // Three signals: the class carries a left colour bar and a fill (pinned in the CSS test
+    // below), plus `aria-current` so the same fact reaches assistive tech.
+    expect(page).toContain('aria-current={isCurrent')
+    expect(page).toContain('data-current={isCurrent')
+
+    const css = readFileSync(join(process.cwd(), 'src', 'client', 'SettingsPage.css'), 'utf-8')
+    const current = css.slice(css.indexOf('.ad-row-current {'))
+    const block = current.slice(0, current.indexOf('}'))
+    expect(block).toContain('border-left-color')
+    expect(block).toContain('background')
+    // Every row reserves the edge, so selecting one does not shift the row's content.
+    const row = css.slice(css.indexOf('.ad-row {'))
+    expect(row.slice(0, row.indexOf('}'))).toContain('border-left: 3px solid transparent')
+  })
+
+  it('🔴 the display name is editable, and renaming never touches the channel id', () => {
+    const page = pageSource()
+    // Adding: a name field exists and is derived from the preset.
+    expect(page).toContain('<span>显示名</span>')
+    expect(page).toContain('lastSuggestedLabel.current')
+    // Renaming an existing channel writes `label` ONLY. Renaming the id would be a different
+    // channel: a different key, and a different `current` target.
+    const rename = page.slice(page.indexOf('const renameChannel = (row: ChannelRow)'))
+    const body = rename.slice(0, rename.indexOf('\n  }'))
+    expect(body).toContain("setField(['channels', row.id, 'label']")
+    expect(body).not.toContain("'channels', row.id, 'apiKey'")
+    // An emptied name restores the preset's name instead of leaving an empty label behind.
+    expect(body).toContain("removeField(['channels', row.id, 'label'])")
+  })
+
+  it('🔴 the rename button cannot also select the channel', () => {
+    // The row is a <label>, so a click on a nested button bubbles into the radio. Without
+    // stopPropagation, renaming a channel would silently make it current — a destructive
+    // side effect on an unrelated action.
+    const page = pageSource()
+    const button = page.slice(page.indexOf('className="ad-link ad-renameBtn"'))
+    const body = button.slice(0, button.indexOf('</button>'))
+    expect(body).toContain('event.stopPropagation()')
+    expect(body).toContain('event.preventDefault()')
+  })
+})
+
+describe('what the rules demand of the wire', () => {
+  it('🔴 the thinking level selected by the harness reaches pi-ai', () => {
+    // The feature was absent, not broken: `reasoning` was a boolean with no value, so every
+    // request used the relay default and the picker's choice was discarded. Two halves have to
+    // be present — the map on the model, and the level on the request.
+    const adapter = readFileSync(join(process.cwd(), 'src', 'adapter.ts'), 'utf-8')
+    expect(adapter).toContain('thinkingLevelMap')
+    expect(adapter).toContain('options.reasoningEffort')
+    expect(adapter).toContain('reasoning: options.reasoningEffort')
+  })
+
+  it('🔴 an OpenCode request carries a PER-SESSION id and this client\'s own user agent', () => {
+    const adapter = readFileSync(join(process.cwd(), 'src', 'adapter.ts'), 'utf-8')
+    // The session id comes from the harness, not from a literal: a constant shared by every
+    // conversation is what the header exists to avoid.
+    expect(adapter).toContain('options.sessionId')
+    expect(adapter).toContain('OPENCODE_SESSION_HEADER')
+    expect(adapter).toContain('CLIENT_USER_AGENT')
+    // The upstream asks clients not to send a generic SDK user agent.
+    const presets = readFileSync(join(process.cwd(), 'src', 'presets.ts'), 'utf-8')
+    expect(presets).toContain('export const CLIENT_USER_AGENT')
   })
 })
 

@@ -22,6 +22,9 @@
   --ad-line: color-mix(in srgb, currentColor 18%, transparent);
   --ad-line-strong: color-mix(in srgb, currentColor 32%, transparent);
   --ad-fill-subtle: color-mix(in srgb, currentColor 7%, transparent);
+  /* The current row's fill: visible against both themes because it is derived from the text
+     colour the host already picked, not from an assumed palette. */
+  --ad-fill-current: color-mix(in srgb, currentColor 11%, transparent);
   --ad-danger: #e5534b;
 }
 
@@ -83,10 +86,39 @@
   border: 1px solid var(--ad-line);
   border-radius: 8px;
   padding: 10px 12px;
+  /*
+   * The left edge is reserved on EVERY row so the current one does not shift its content when
+   * selected — a row that reindents on click makes the list feel like it moved.
+   */
+  border-left: 3px solid transparent;
 }
 
+/*
+ * 🔴 The current channel is marked three ways, not one.
+ *
+ * It used to be a small badge plus a barely-different border, and the owner could not tell at a
+ * glance which relay was live — glanceability is the whole point of a single-choice list. So:
+ * a colour bar down the left edge, a stronger border, and a tinted fill. All derived from
+ * `currentColor`, because this host ships no colour tokens (measured: 29 custom properties, none
+ * of them a colour), so any hardcoded value would assume the wrong theme.
+ */
 .ad-row-current {
   border-color: var(--ad-line-strong);
+  border-left-color: currentColor;
+  background: var(--ad-fill-current);
+}
+
+/* The 当前 badge keeps its place as the textual confirmation, for when colour is not enough. */
+.ad-row-current .ad-badge {
+  border-color: currentColor;
+  opacity: 1;
+  font-weight: 600;
+}
+
+/* A rename button must not look like the row's own selection affordance. */
+.ad-renameBtn {
+  margin-left: auto;
+  flex: none;
 }
 
 .ad-rowMain {

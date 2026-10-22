@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.0.7
+
+### 修复（owner 2026-10-22 一次报六条）
+
+- 🔴 **增删渠道后要关面板重开才看见** —— 面板渲染的行来自 `/any-deepseek/channels`，那是
+  从**配置**算出来的、不是推送。而 `removeChannel` 写完**从不重读**（`addChannel` 也没有），
+  所以面板一直显示写之前的快照。修法：把重读收进 `write()` 的成功分支 —— **每个写入点自动
+  继承**，不再依赖"记得加一行"。
+
+- 🔴 **think 强度选了不生效**（"所有渠道 think 强度要支持设定"）—— 功能**不存在**，不是坏了。
+  宿主 `GenerateOptions.reasoningEffort` → pi-ai `SimpleStreamOptions.reasoning` →
+  `model.thinkingLevelMap` 翻成 wire 值，**三段都在，我们中间没接**：`reasoning` 只是个布尔，
+  没值的；请求里的档位也没往下传。
+  - 现在 `buildPiModel` 输出 `thinkingLevelMap`、`stream()` 传 `options.reasoningEffort`。
+  - **没有自写翻译层**：pi-ai 的 map 就是翻译层，重复实现必然与它漂移。
+  - 档位从 `low/high/max` 扩到 `low/medium/high/max`，`off` 显式标为不支持（`null`），
+    选择器也不再列出不支持的那一档。
+
+- 🔴 **opencode 渠道 400 `MissingSessionID`** —— 官方文档三条要求，我们一条没满足对：
+  ① session id 必须**按会话稳定**，而 preset 里写的是**常量**（所有会话共用一个 id）；
+  ② `User-Agent` 要**自报客户端**，而 pi-ai 默认用的是通用 SDK 名；
+  ③ 文档把 **DeepSeek Harness 明确列为 known-problematic client**（"session information
+  arrives on some model paths, but is missing on others"）。
+  - 修法：session id 从宿主的 `options.sessionId` **按请求注入**；`User-Agent` 覆盖成
+    `dsh-any-deepseek/1.0`。preset 里不再放静态 session。
+  - ⚠️ 第 ③ 条是上游对我们这类客户端的已知态度，即使三条都做对，这条渠道仍可能比别家严。
+
+- 🔴 **「当前渠道」不够明显** —— 原来只有一个小徽标加几乎看不出的边框差。现在三重标识：
+  左侧色条 + 更强边框 + 底色，并补 `aria-current`。每行**预留**左边条，选中时不产生位移。
+
+### 新增
+
+- **显示名可改**（同一渠道多账号）—— `label` 字段运行时**一直支持**，面板却从没让人填过。
+  添加表单带出预设名可改；每行有「改名」入口。**改名只动 `label`，绝不动 id**——id 是渠道身份，
+  改了就变成另一个渠道（另一个 key、另一个 current 目标）。
+
+### 明确不做
+
+- **图片输入仍然声明为 text-only**。模型是多模态的，但宿主 `ImageBlock` 只带
+  `attachmentId` 不含字节，要发出去必须走 `ctx.attachments.readImageRequest()`（宿主的
+  pi-ai adapter 就是这么做的），**本适配器还没有这条路**。此时声明 image 会让宿主停止用
+  占位文本替代，而图片被**静默丢掉** —— 比声明 text-only 更坏。
+  ⇒ 能力声明必须能被实际路径兑现；接 attachments 通路列为独立后续项。
+
 ## v0.0.6
 
 ### 变更（语义）

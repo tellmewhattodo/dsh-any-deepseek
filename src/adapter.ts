@@ -50,7 +50,7 @@ import {
 // OpenAI SDK load to the first request, which is why the plugin boots quickly.
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
-import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME } from './presets.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_HEADER } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
 import type { LedgerEntry } from './usage-ledger.js'
@@ -98,6 +98,23 @@ interface CallOutcome {
  * @returns a pi-ai chat model describing that relay's view of the model.
  */
 export function buildPiModel(channel: ResolvedChannel): Model<Api> {
+  // 🔴 The thinking map is pi-ai's own translation layer, not ours.
+  //
+  // The harness sends `GenerateOptions.reasoningEffort` (a level name), pi-ai takes a
+  // `ThinkingLevel`, and `model.thinkingLevelMap` turns that level into whatever the relay wants
+  // on the wire (`reasoning_effort: "high"`, or `null` for "not supported"). Implementing our own
+  // mapping would duplicate a translation the transport already performs, and the two would
+  // drift the first time either side learned a new level.
+  //
+  // Only levels with a real wire value are passed: `null` means "explicitly unsupported", and
+  // declaring a level unsupported is a stronger claim than simply not offering it.
+  const thinkingLevelMap = channel.reasoningEfforts === undefined
+    ? undefined
+    : Object.fromEntries(
+      Object.entries(channel.reasoningEfforts).filter(([, value]) => value !== null),
+    )
+  const hasThinking = thinkingLevelMap !== undefined && Object.keys(thinkingLevelMap).length > 0
+
   return {
     id: channel.model,
     name: channel.label,
@@ -110,7 +127,8 @@ export function buildPiModel(channel: ResolvedChannel): Model<Api> {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: channel.contextWindow,
     maxTokens: channel.maxTokens,
-    reasoning: channel.reasoningEfforts !== undefined && Object.keys(channel.reasoningEfforts).length > 0,
+    reasoning: hasThinking,
+    ...hasThinking ? { thinkingLevelMap: thinkingLevelMap as Record<string, string> } : {},
     ...channel.compat === undefined ? {} : { compat: channel.compat as Record<string, never> },
     ...channel.headers === undefined ? {} : { headers: { ...channel.headers } },
   }
@@ -493,7 +511,13 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     // picker with "非法的 reasoning metadata".
     //
     // ⇒ Emit `reasoning` only when there is at least one real effort.
-    const efforts = Object.keys(channel?.reasoningEfforts ?? {})
+    //
+    // A level mapped to `null` means "explicitly unsupported on this relay", so it is filtered
+    // out of the PICKER as well — offering a level the wire will refuse is the same class of
+    // mistake as hiding one the wire accepts.
+    const efforts = Object.entries(channel?.reasoningEfforts ?? {})
+      .filter(([, wire]) => wire !== null)
+      .map(([id]) => id)
     const reasoning = efforts.length === 0
       ? {}
       : { reasoning: { efforts: efforts.map((id) => ({ id: ReasoningEffortId(id), name: id })) } }
@@ -593,11 +617,41 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       api: openAICompletionsApi(),
     }))
 
+    /**
+     * Per-request headers.
+     *
+     * Two things OpenCode Go requires cannot live in a preset, because neither is a constant:
+     *
+     *  · `x-opencode-session` must be STABLE PER CONVERSATION. A single shared literal satisfied
+     *    the letter of "send the header" while defeating its purpose (routing and prompt-cache
+     *    affinity), which is why the previous preset's fixed value produced 400s. The harness
+     *    already stamps every request with `sessionId`; that is the correct source.
+     *  · `User-Agent` must identify THIS client rather than the generic SDK. pi-ai sets its own,
+     *    so the preset's static headers alone can never satisfy that rule.
+     */
+    const requestHeaders: Record<string, string> = {}
+    // The `x-opencode-client` header is this plugin's marker for "this is an OpenCode endpoint".
+    // Keying off it (rather than the channel id or the base URL) keeps the rule in one place: the
+    // preset that declares the endpoint is the preset that declares its requirements.
+    if (channel.headers !== undefined && Object.hasOwn(channel.headers, 'x-opencode-client')) {
+      const session = options.sessionId === undefined ? undefined : String(options.sessionId)
+      if (session !== undefined && session !== '') {
+        requestHeaders[OPENCODE_SESSION_HEADER] = session
+        requestHeaders['X-Session-ID'] = session
+      }
+      requestHeaders['User-Agent'] = CLIENT_USER_AGENT
+    }
+
     const streamOptions: SimpleStreamOptions = {
       apiKey: key,
       signal: options.signal,
       ...options.temperature === undefined ? {} : { temperature: options.temperature },
       ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
+      // The harness's selected level goes one layer down into pi-ai's vocabulary. Passing it
+      // through is the whole feature: without it `reasoning` was a boolean with no value, so
+      // every request used the relay's own default and the picker's choice was discarded.
+      ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort as SimpleStreamOptions['reasoning'] },
+      ...Object.keys(requestHeaders).length === 0 ? {} : { headers: requestHeaders },
     }
 
     try {

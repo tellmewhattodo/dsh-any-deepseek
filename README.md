@@ -98,6 +98,35 @@ v1 is deliberately manual. A channel that fails reports its error; it does not s
 over to another one. Switching invalidates the prompt cache for the running conversation, so
 switch at a natural boundary (or start a new session).
 
+The current channel is marked on its row (left colour bar, stronger border, tinted background)
+rather than by a small badge — a single-choice list has to be readable at a glance.
+
+### Thinking level
+
+Each channel declares its selectable thinking levels, and the level picked in the harness is
+passed through to the relay:
+
+```
+harness reasoningEffort → pi-ai ThinkingLevel → model.thinkingLevelMap → wire value
+```
+
+There is no mapping layer in this plugin: the `thinkingLevelMap` the transport applies **is**
+the mapping, and a second one here would drift from it. A level declared `null` is unsupported
+and is not offered in the picker.
+
+### Display names
+
+`label` is a free-form display name, and it is what tells two accounts on the same relay apart.
+Rename a channel from the panel; the channel **id** never changes, because the id is the
+channel's identity (its key and its `current` target hang off it).
+
+### Image input
+
+Not supported yet, and declared as such. A harness `ImageBlock` carries only an
+`attachmentId`; turning that into request bytes requires the durable attachment service, which
+this adapter does not consult. Declaring image support anyway would make the harness stop
+substituting its placeholder text and drop the image silently — worse than declaring text-only.
+
 ## Usage accounting
 
 The ledger is append-only JSONL, split by month, under the harness home:

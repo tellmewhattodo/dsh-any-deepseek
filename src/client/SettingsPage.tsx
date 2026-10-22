@@ -110,13 +110,25 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    * second store to hold the value) was the design the owner rejected.
    */
   const [newSecret, setNewSecret] = useState('')
+  /**
+   * The channel's display name, as typed.
+   *
+   * Empty means "use the preset's name". It is a real field (`label`) that the runtime has always
+   * honoured — the panel simply never exposed it, which made "two accounts on the same relay"
+   * impossible to tell apart.
+   */
+  const [newLabel, setNewLabel] = useState('')
 
   /** Which channel currently has its inline key field open (null = none). */
   const [keying, setKeying] = useState<string | null>(null)
   const [keyDraft, setKeyDraft] = useState('')
   const [keySaving, setKeySaving] = useState(false)
-  /** The channel id the form last derived from a preset (see the select's onChange). */
+  /** Which channel currently has its inline RENAME field open (null = none). */
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  /** The channel id and the label the form last derived from a preset (see the select). */
   const lastSuggestedId = useRef('')
+  const lastSuggestedLabel = useRef('')
 
   const refresh = useCallback(async (): Promise<void> => {
     const [loaded, statsNow] = await Promise.all([loadChannels(), loadStats(group)])
@@ -146,6 +158,15 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    * reasons they cannot (transport). Both are facts, and silently discarding them is what makes
    * a panel look alive while nothing is saved.
    *
+   * 🔴 **A successful write RE-READS, right here.** The rows the panel renders come from
+   * `/any-deepseek/channels`, which is computed from the configuration — not a live push. So a
+   * write that does not re-read leaves the panel showing the document as it was BEFORE the write,
+   * and the only way to see the result was to close and reopen the panel. Reported by the owner
+   * as "adding or removing a channel does not show up until I reopen".
+   *
+   * Doing it centrally matters: the previous code had `refresh()` at one call site and not at the
+   * others, so correctness depended on remembering. A new write path now inherits it.
+   *
    * 🔴 **The refusal message must NOT name causes we have not checked.** This used to read
    * "只读部署，或设置服务未启用" — and the one time it actually fired, the real cause was
    * neither: `current` was missing `.volatile()` in the schema, three layers away. Naming two
@@ -157,8 +178,16 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const write = (run: () => Promise<boolean>, context = '保存失败'): void => {
     void run().then(
       (accepted) => {
-        if (!accepted) setError(`${context}：宿主拒绝了这个修改`)
-        else setError(null)
+        if (!accepted) {
+          setError(`${context}：宿主拒绝了这个修改`)
+          return
+        }
+        setError(null)
+        // Read back what the host now stores. Failure here is reported but does not undo the
+        // write: the change landed, and saying otherwise would be a second lie.
+        void refresh().catch((cause: unknown) => {
+          setError(`已写入，但重新读取失败：${cause instanceof Error ? cause.message : String(cause)}`)
+        })
       },
       (cause: unknown) => {
         setError(`${context}：${cause instanceof Error ? cause.message : String(cause)}`)
@@ -194,15 +223,19 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
    * there is no second store to keep in step, so there is no ordering to get wrong and no way for
    * "channel exists but its key does not" to be a reachable state. Pre-filling endpoint fields is
    * still avoided: a preset-backed channel records the preset, so later preset fixes reach it.
+   *
+   * `label` is only written when the user changed it. Leaving it out lets the preset's display
+   * name apply and keep tracking preset changes; writing the same string back would freeze
+   * today's name into the document.
    */
   const addChannel = (): void => {
     const id = newId.trim()
     if (newPreset === '' || id === '' || newIdProblem !== null || newSecret.trim() === '') return
+    const label = newLabel.trim()
+    const entry: Record<string, JsonValue> = { preset: newPreset, apiKey: newSecret.trim() }
+    if (label !== '') entry.label = label
 
-    write(
-      () => setField(['channels', id], { preset: newPreset, apiKey: newSecret.trim() }),
-      '添加渠道失败',
-    )
+    write(() => setField(['channels', id], entry), '添加渠道失败')
     // The first channel added to an empty document becomes current: leaving `current` empty
     // means every request fails with NO_CHANNEL_SELECTED, which reads as a broken plugin.
     if (current === '') write(() => setField(['current'], id), '设为当前渠道失败')
@@ -210,11 +243,18 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     // leave the key sitting in memory (and in React DevTools) for no benefit.
     setNewSecret('')
     setNewId('')
+    setNewLabel('')
     setNewPreset('')
     lastSuggestedId.current = ''
+    lastSuggestedLabel.current = ''
     setAdding(false)
   }
 
+  /**
+   * Remove one channel.
+   *
+   * The row disappears because `write()` re-reads on success; there is nothing to remember here.
+   */
   const removeChannel = (id: string): void => {
     write(() => removeField(['channels', id]), '移除渠道失败')
     if (current === id) write(() => removeField(['current']), '清除当前选择失败')
@@ -253,6 +293,25 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     }
   }
 
+  /**
+   * Rename one channel.
+   *
+   * `label` is the display name and nothing else: the channel's identity is its id (the
+   * configuration key), which renaming must never touch — a renamed key would be a different
+   * channel, with a different key and a different `current` target.
+   *
+   * Clearing the name removes the field, which restores the preset's name rather than leaving an
+   * empty label in the document.
+   * @param row - the channel being renamed.
+   */
+  const renameChannel = (row: ChannelRow): void => {
+    const next = renameDraft.trim()
+    if (next === '') write(() => removeField(['channels', row.id, 'label']), '恢复默认名失败')
+    else write(() => setField(['channels', row.id, 'label'], next), '重命名失败')
+    setRenaming(null)
+    setRenameDraft('')
+  }
+
   return (
     <div className="ad-page">
       <header className="ad-head">
@@ -279,7 +338,21 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             const isCurrent = current === row.id
             const probeResult = verdict[row.id]
             return (
-              <li key={row.id} className={`ad-row${isCurrent ? ' ad-row-current' : ''}`}>
+              <li
+                key={row.id}
+                className={`ad-row${isCurrent ? ' ad-row-current' : ''}`}
+                /*
+                 * The current channel is marked three ways on purpose: a colour bar down the
+                 * left edge, a stronger border, and a tinted background. The owner's complaint
+                 * was that a small badge was not enough to tell at a glance which relay is live,
+                 * and a glance is exactly how this list is read.
+                 *
+                 * `aria-current` carries the same fact to assistive tech — the visual weight is
+                 * for people who scan, and this is for people who do not.
+                 */
+                aria-current={isCurrent ? 'true' : undefined}
+                data-current={isCurrent ? 'true' : 'false'}
+              >
                 {/*
                   The channel list is a RADIO GROUP, not a row of action buttons.
 
@@ -303,7 +376,55 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                       {row.warnings.length > 0 && (
                         <span className="ad-warn" title={row.warnings.join('\n')}>⚠</span>
                       )}
+                      {/*
+                        Renaming lives next to the name it changes.
+
+                        Two accounts on the same relay differ only by their label, so the label has
+                        to be editable — and editable where it is read, not behind a separate
+                        screen. The row is a radio label, so this button stops the click from
+                        propagating; otherwise renaming would also select the channel.
+                      */}
+                      <button
+                        type="button"
+                        className="ad-link ad-renameBtn"
+                        title="改显示名（渠道 id 不变）"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setRenaming(renaming === row.id ? null : row.id)
+                          setRenameDraft(renaming === row.id ? '' : row.label)
+                        }}
+                      >
+                        {renaming === row.id ? '取消' : '改名'}
+                      </button>
                     </span>
+                    {renaming === row.id && (
+                      <span className="ad-keyForm">
+                        <input
+                          className="ad-input"
+                          value={renameDraft}
+                          placeholder="显示名（留空则用预设默认名）"
+                          onClick={(event) => event.preventDefault()}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              renameChannel(row)
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ad-btn"
+                          onClick={(event) => {
+                            event.preventDefault()
+                            renameChannel(row)
+                          }}
+                        >
+                          保存名字
+                        </button>
+                      </span>
+                    )}
                     <span className="ad-rowMeta">
                       <span className="ad-mono">{row.model}</span>
                       <span className="ad-sep">·</span>
@@ -415,11 +536,11 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 onChange={(event) => {
                   const next = event.target.value
                   setNewPreset(next)
-                  // Derive the channel id — but only replace a value that is EMPTY or was itself
-                  // derived by a previous preset choice. A value the user typed is theirs:
-                  // switching presets must not silently discard it.
+                  // Derive the channel id AND the display name — but only replace a value that is
+                  // EMPTY or was itself derived by a previous preset choice. A value the user
+                  // typed is theirs: switching presets must not silently discard it.
                   //
-                  // 🔴 Read the previous suggestion into a LOCAL before scheduling the update. A
+                  // 🔴 Read the previous suggestions into LOCALS before scheduling the updates. A
                   // React state updater runs LATER, so comparing against `lastSuggestedId.current`
                   // inside one compares with the value this handler already overwrote — the test
                   // could never succeed and a derived id was never refreshed. Measured in the real
@@ -427,9 +548,13 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   // Ollama. (An earlier version also read `previous === '' || previous === ''` —
                   // the same test twice.)
                   const previousId = lastSuggestedId.current
+                  const previousLabel = lastSuggestedLabel.current
                   const nextId = suggestId(next, rows)
+                  const nextLabel = presets.find((preset) => preset.id === next)?.displayName ?? ''
                   setNewId((current) => (current === '' || current === previousId) ? nextId : current)
+                  setNewLabel((current) => (current === '' || current === previousLabel) ? nextLabel : current)
                   lastSuggestedId.current = nextId
+                  lastSuggestedLabel.current = nextLabel
                 }}
               >
                 <option value="">选择规格…</option>
@@ -448,6 +573,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               />
             </label>
             {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
+            {/*
+              The display name — editable, and derived from the preset by default.
+
+              This is what makes "the same relay, two accounts" readable: the entries differ only
+              by which key they carry, so the name is the only thing that can tell them apart. The
+              runtime has honoured `label` since the beginning; the panel simply never asked.
+            */}
+            <label className="ad-field">
+              <span>显示名</span>
+              <input
+                className="ad-input"
+                value={newLabel}
+                placeholder={newPreset === '' ? '先选上面的规格' : '例如「Open Design（主号）」'}
+                onChange={(event) => setNewLabel(event.target.value)}
+              />
+            </label>
             {/*
               🔴 The key, and nothing but the key.
 
@@ -486,7 +627,15 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <button type="button" className="ad-btn" onClick={() => { setAdding(true); lastSuggestedId.current = '' }}>
+          <button
+            type="button"
+            className="ad-btn"
+            onClick={() => {
+              setAdding(true)
+              lastSuggestedId.current = ''
+              lastSuggestedLabel.current = ''
+            }}
+          >
             添加渠道
           </button>
         )}
