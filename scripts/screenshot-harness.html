@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>dsh-any-deepseek — panel screenshot harness</title>
+  <!--
+    Stands in for the harness's settings pane: same width the panel actually gets, and the dark
+    theme values the host applies (the panel derives everything from `currentColor`, so the
+    surrounding colour IS its palette).
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #1b1b1f;
+      color: #e6e6e8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+    }
+    #root { max-width: 760px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./screenshot-harness.bundle.js"></script>
+</body>
+</html>

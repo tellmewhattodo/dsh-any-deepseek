@@ -212,7 +212,11 @@ describe('the panel takes the KEY and stores it on the channel', () => {
 
   it('asks for the key itself, in a masked field', () => {
     const page = pageSource()
-    expect(page).toContain('<span>密钥</span>')
+    // The field is labelled 密钥 and marked REQUIRED. The marker is asserted too, because "which
+    // fields can I skip?" was previously unanswerable from the form — and the one field that
+    // could not be skipped looked exactly like the two that could.
+    expect(page).toContain('<em className="ad-req">必选</em>')
+    expect(page).toMatch(/<span>密钥<em className="ad-req">必选<\/em><\/span>/)
     expect(page).toContain('type="password"')
     // The old wording must not come back: one named a place that does not exist, the other asked
     // the user to invent an identifier for something they only have a value for.
@@ -295,8 +299,9 @@ describe('what the owner reported, pinned as assertions', () => {
 
   it('🔴 the display name is editable, and renaming never touches the channel id', () => {
     const page = pageSource()
-    // Adding: a name field exists and is derived from the preset.
-    expect(page).toContain('<span>显示名</span>')
+    // Adding: a name field exists, is derived from the preset, and is marked OPTIONAL — the
+    // marker matters because leaving it blank is a real choice (the preset's name applies).
+    expect(page).toMatch(/<span>显示名<em className="ad-opt">可空<\/em><\/span>/)
     expect(page).toContain('lastSuggestedLabel.current')
     // Renaming an existing channel writes `label` ONLY. Renaming the id would be a different
     // channel: a different key, and a different `current` target.
@@ -368,6 +373,109 @@ describe('what the rules demand of the wire', () => {
     for (const protocol of ['openai-completions', 'openai-responses', 'anthropic-messages']) {
       expect(adapter, protocol).toContain(`'${protocol}'`)
     }
+  })
+})
+
+describe('布局：分 tab，让用户不必滚动', () => {
+  /**
+   * Owner request (2026-10-23): 「这两个用分tab页面panel方式做 … 可以让用户不用滚动鼠标滚轮」.
+   *
+   * The panel answers two questions asked at DIFFERENT TIMES — "which relay serves me and does
+   * its key work" (setup) vs "what has each relay cost" (review). Stacked on one scroll, reading
+   * the cost table meant scrolling past every channel row.
+   */
+  it('🔴 the two panels are mutually exclusive — never both rendered', () => {
+    const page = pageSource()
+    // Each panel is guarded by its own flag. If both render, the page scrolls again and the tabs
+    // become decoration — exactly the state this change exists to leave.
+    expect(page).toContain("{tab === 'channels' && (")
+    expect(page).toContain("{tab === 'usage' && (")
+  })
+
+  it('the tabs are real tabs: role, selected state, and labels', () => {
+    const page = pageSource()
+    // `role="tablist"` + `aria-selected` is what makes this announce as tabs rather than as two
+    // buttons that happen to sit next to each other.
+    expect(page).toContain('role="tablist"')
+    expect(page).toContain('role="tab"')
+    expect(page).toContain('aria-selected={tab === ')
+    // The panels they control are labelled, so "which panel is this?" is answerable by a reader
+    // who is not looking at the tab strip.
+    expect(page).toContain('role="tabpanel"')
+  })
+
+  it('渠道 is the default tab, because it is the question a new user must answer first', () => {
+    const page = pageSource()
+    // An empty install showing an empty usage table answers nothing; it should land on the list
+    // where "add a channel" is.
+    expect(page).toContain("useState<PanelTab>('channels')")
+  })
+
+  it('the channel tab carries a count, so "how many do I have" needs no click', () => {
+    expect(pageSource()).toContain('ad-tabCount')
+  })
+})
+
+describe('面板里附上仓库地址（owner 2026-10-23）', () => {
+  it('🔴 the source URL is in the panel, and it is the real one', () => {
+    const page = pageSource()
+    const url = page.match(/REPO_URL\s*=\s*'([^']+)'/)?.[1]
+    expect(url).toBe('https://github.com/tellmewhattodo/dsh-any-deepseek')
+    // …and it is actually RENDERED, not merely defined: a constant nobody prints helps nobody.
+    expect(page).toContain('href={REPO_URL}')
+  })
+
+  it('the link opens in a new tab and cannot reach back through window.opener', () => {
+    const page = pageSource()
+    // A settings panel navigating itself away would lose the user's place mid-edit.
+    expect(page).toContain('target="_blank"')
+    expect(page).toContain('rel="noreferrer"')
+  })
+
+  it('the footer says the thing an improver needs to know: it is MIT and forkable', () => {
+    expect(pageSource()).toContain('MIT')
+  })
+})
+
+describe('面板文案 (EAP rewrite, owner 2026-10-23)', () => {
+  /**
+   * The text is part of the product here: the panel is the only place most users will ever read
+   * about this plugin. Each assertion below pins a FACT the panel must state, because leaving it
+   * out means the reader infers something else.
+   */
+  it('states which provider this page configures, and that there is exactly one model', () => {
+    const page = pageSource()
+    expect(page).toContain('any-deepseek 这一个 provider')
+    // The one-model fact is the plugin's entire shape; a reader who misses it thinks this is a
+    // multi-model switcher.
+    expect(page).toContain('只提供一个模型')
+  })
+
+  it('🔴 says selecting a channel does NOT fail over — the cost of that silently missing is a wrong expectation', () => {
+    expect(pageSource()).toContain('不会自动切换')
+  })
+
+  it('names the exact config key where the secret lands', () => {
+    // "Stored securely" is not a fact a reader can verify; a path is.
+    expect(pageSource()).toContain('channels.&lt;id&gt;.apiKey')
+  })
+
+  it('🔴 warns that a liveness check spends tokens, on the button that spends them', () => {
+    // A button that quietly costs money is worse than one that cannot be clicked.
+    const page = pageSource()
+    expect(page).toContain('消耗一两个 token')
+  })
+
+  it('states the counting convention next to the numbers, not in a document', () => {
+    const page = pageSource()
+    // Disjoint counters: summing the wrong columns makes input look under-reported.
+    expect(page).toContain('计费输入')
+    expect(page).toContain('未命中缓存')
+  })
+
+  it('🔴 says that a dash means unmeasured — and that it is not zero', () => {
+    // `0` would claim the relay produced nothing, which is a much stronger and usually false claim.
+    expect(pageSource()).toContain('表示没测到，不是 0')
   })
 })
 

@@ -179,14 +179,32 @@
   flex-shrink: 0;
 }
 
+/*
+ * Buttons: sized to be hit, not guessed at.
+ *
+ * The previous 4px/10px padding made a 22px-tall target, which is below the comfortable
+ * threshold and made the row actions (测试 / 移除) look like text rather than controls. 6px/12px
+ * with a minimum width gives each one a real box while keeping the row compact — a row action is
+ * secondary, so it should be easy to hit and easy to ignore.
+ */
 .ad-btn {
   font-size: 11px;
-  padding: 4px 10px;
+  font-family: inherit;
+  line-height: 1.5;
+  padding: 5px 12px;
+  min-width: 56px;
+  min-height: 26px;
   border-radius: 6px;
   border: 1px solid var(--ad-line);
   background: transparent;
   color: inherit;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.ad-btn:hover:not(:disabled) {
+  border-color: var(--ad-line-strong);
+  background: var(--ad-fill-subtle);
 }
 
 .ad-btn:disabled {
@@ -195,7 +213,7 @@
 }
 
 .ad-btn-quiet {
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
 .ad-probe {
@@ -265,29 +283,109 @@
 /* The switch is gone: selection is the only axis (see `channels.ts`). Keeping the rules would
    invite someone to bring the second axis back. */
 
+/* ── top-level tabs (渠道 / 用量) ──────────────────────────────────────────── */
+
+/*
+ * The panel answers two questions asked at different moments: "which relay serves me and does
+ * its key work" and "what has each relay cost". They used to be stacked on one scroll, so
+ * reading the cost table meant scrolling past every channel row. As tabs, each answer gets the
+ * whole panel and the reader never scrolls to reach the second one.
+ *
+ * The selected tab is marked by a bottom rule plus full opacity — not by colour alone, because
+ * this host ships no colour tokens and a colour-only cue would vary with the theme.
+ */
 .ad-tabs {
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  border-bottom: 1px solid var(--ad-line);
 }
 
 .ad-tab {
-  font-size: 11px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--ad-line);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Comfortable click target: 28px tall is enough to hit without aiming, and still compact
+     enough that two tabs do not dominate the panel. */
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  border: none;
+  border-bottom: 2px solid transparent;
+  /* Pulled down over the container's rule so the selected tab's underline replaces it. */
+  margin-bottom: -1px;
   background: transparent;
   color: inherit;
+  opacity: 0.62;
   cursor: pointer;
 }
 
-.ad-tab-on {
-  border-color: var(--ad-line-strong);
-  font-weight: 600;
+.ad-tab:hover {
+  opacity: 0.85;
 }
 
-.ad-tab-refresh {
-  margin-left: auto;
-  opacity: 0.75;
+.ad-tab-on {
+  opacity: 1;
+  font-weight: 600;
+  border-bottom-color: currentColor;
+}
+
+/* A count on the channel tab, so "how many do I have" is answered without opening it. */
+.ad-tabCount {
+  font-size: 10px;
+  font-weight: 500;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  text-align: center;
+  background: var(--ad-fill-subtle);
+  opacity: 0.8;
+}
+
+/* ── segmented control (按渠道 / 按天 / 刷新) ─────────────────────────────── */
+
+/*
+ * A segmented control rather than free-floating pill buttons: these three share one meaning
+ * ("how the table below is grouped, and re-read it"), so they are drawn as one object. The
+ * borders collapse to avoid double lines between neighbours.
+ */
+.ad-segmented {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--ad-line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.ad-seg {
+  padding: 4px 11px;
+  font-size: 11px;
+  font-family: inherit;
+  border: none;
+  border-right: 1px solid var(--ad-line);
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.ad-seg:last-child {
+  border-right: none;
+}
+
+.ad-seg:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--ad-fill-subtle);
+}
+
+.ad-seg-on {
+  opacity: 1;
+  font-weight: 600;
+  background: var(--ad-fill-subtle);
+}
+
+/* Refresh is an action, not a grouping — a gap separates it from the choice it refreshes. */
+.ad-seg-refresh {
+  border-left: 1px solid var(--ad-line);
 }
 
 .ad-table {
@@ -323,31 +421,78 @@
 .ad-addForm {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
   border: 1px dashed var(--ad-line);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 14px;
 }
 
 .ad-field {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 5px;
   font-size: 11px;
 }
 
-.ad-field > span {
+/* The label row: the field name, plus a required/optional marker that says which is which. */
+.ad-field > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+/*
+ * 必选 / 可空 as a small marker rather than a sentence.
+ *
+ * The add form used to leave the reader guessing which fields could be skipped — and the one
+ * field that could not be skipped (the key) looked exactly like the two that could. The marker
+ * is text, not colour, so it survives both themes and any colour-blindness.
+ */
+.ad-req,
+.ad-opt {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 400;
+  padding: 1px 5px;
+  border-radius: 4px;
   opacity: 0.7;
 }
 
-.ad-input {
+.ad-req {
+  border: 1px solid var(--ad-line-strong);
+}
+
+.ad-opt {
+  border: 1px dotted var(--ad-line);
+}
+
+/* Why this field exists, in one line — printed under the control, not hidden in a tooltip. */
+.ad-fieldHelp {
   font-size: 11px;
-  padding: 4px 8px;
+  line-height: 1.55;
+  opacity: 0.6;
+}
+
+.ad-input {
+  font-size: 12px;
+  font-family: inherit;
+  /* 6px/9px keeps the control the same height as a `.ad-btn` (26px), so a field and its button
+     on one line align without a per-case override. */
+  padding: 5px 9px;
+  min-height: 26px;
   border-radius: 6px;
   border: 1px solid var(--ad-line);
   background: transparent;
   color: inherit;
-  font-family: inherit;
+}
+
+.ad-input:focus-visible {
+  outline: 2px solid var(--ad-line-strong);
+  outline-offset: 1px;
+  border-color: var(--ad-line-strong);
 }
 
 /*
@@ -508,4 +653,71 @@ select.ad-input option {
   opacity: 1;
   border-color: var(--ad-danger);
   color: var(--ad-danger);
+}
+
+/*
+ * The one hint that must not be skimmed past: where the key ends up.
+ *
+ * It carries a left rule and slightly higher opacity than an ordinary hint, because a reader who
+ * skips it has been told something false by omission — the key IS in the profile document.
+ */
+.ad-hint-warn {
+  padding: 8px 10px;
+  border-left: 3px solid var(--ad-line-strong);
+  background: var(--ad-fill-subtle);
+  border-radius: 0 6px 6px 0;
+  opacity: 0.82;
+}
+
+/*
+ * The table can be wider than a narrow settings pane (ten columns of numbers). Scrolling it
+ * inside its own box keeps the tab strip and the channel list reachable, instead of pushing the
+ * whole panel sideways.
+ */
+.ad-tableWrap {
+  overflow-x: auto;
+  /* A hint that there is more to the right, without a scrollbar competing with the borders. */
+  scrollbar-width: thin;
+}
+
+.ad-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+/* The first column is a name, not a number: keep it from being squeezed by the numeric columns. */
+.ad-table th:first-child,
+.ad-table td:first-child {
+  white-space: nowrap;
+  padding-right: 14px;
+}
+
+/* ── footer ───────────────────────────────────────────────────────────────── */
+
+/*
+ * States what this thing is (MIT, open, improvable) and where it lives. A user deciding whether
+ * to fork it or add a relay should not have to search for the source.
+ */
+.ad-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ad-line);
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.ad-footLink {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.ad-footLink:hover {
+  opacity: 0.9;
 }

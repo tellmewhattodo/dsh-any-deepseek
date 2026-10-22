@@ -1,12 +1,24 @@
 /**
  * client/SettingsPage.tsx — the panel.
  *
- * Three screens in one page, because they answer one question each at increasing depth:
+ * ## One page, two tabs
  *
- *  1. **which channel is live** — the only decision v1 asks of the user;
- *  2. **what each channel costs** — tokens per relay, with the counting convention printed next
- *     to the numbers rather than buried in a doc;
- *  3. **whether a channel works** — an explicit, token-spending probe.
+ * The panel answers exactly two questions, and they are asked at different times:
+ *
+ *  1. **渠道** — which relay is live, and is its key usable? (asked when configuring)
+ *  2. **用量** — what has each relay actually cost in tokens? (asked when reviewing)
+ *
+ * They used to be stacked on one scroll, so reading the cost table meant scrolling past every
+ * channel row. They are now two tabs: each answer gets the full panel height, and the reader
+ * never scrolls to reach the second question.
+ *
+ * ## What the text is doing
+ *
+ * Every sentence on this page states a fact the reader can verify on the page itself — which
+ * provider this belongs to, which model is exposed, what selecting a channel does, where the key
+ * is stored, what a liveness check does and does not prove. That is deliberate: the panel is the
+ * only place most users will ever read about this plugin, so a sentence that merely sounds
+ * reassuring is worse than no sentence.
  *
  * The page never displays a key. It displays whether a key is configured, which is the fact the
  * harness credential surface is willing to expose.
@@ -55,6 +67,18 @@ export interface SettingsPageInjected {
 
 /** The JSON value shapes a settings write accepts. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+/**
+ * Where this plugin's source lives.
+ *
+ * Shown in the panel footer because the panel is where a user decides whether to keep, fork or
+ * improve this thing — and the answer to "can I change it?" should not require a search. Kept as
+ * a constant so the footer text and any future link cannot disagree.
+ */
+export const REPO_URL = 'https://github.com/tellmewhattodo/dsh-any-deepseek'
+
+/** Which tab is showing. */
+type PanelTab = 'channels' | 'usage'
 
 /**
  * A channel id derived from a preset id, made unique against what already exists.
@@ -111,6 +135,13 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [balances, setBalances] = useState<Record<string, BalanceRow>>({})
   const [balancesLoading, setBalancesLoading] = useState(false)
   const [group, setGroup] = useState<'channel' | 'day'>('channel')
+  /**
+   * Which of the panel's two questions is on screen.
+   *
+   * 渠道 is the default because it is the one a new user must answer first — an empty panel
+   * showing a usage table with no rows answers nothing.
+   */
+  const [tab, setTab] = useState<PanelTab>('channels')
   const [probing, setProbing] = useState<string | null>(null)
   const [verdict, setVerdict] = useState<Record<string, ProbeResult>>({})
   const [error, setError] = useState<string | null>(null)
@@ -353,18 +384,45 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
       <header className="ad-head">
         <h2 className="ad-title">Any DeepSeek</h2>
         <p className="ad-intro">
-          这里定义的是 <strong>any-deepseek 这一个 provider</strong> 的内部渠道，
-          与 DSH 别处的设置无关。本插件对外只暴露一个模型
-          （<span className="ad-mono">{model.name || 'DeepSeek V4.1 Flash'}</span>）；
-          下面勾选哪一个渠道，请求就只发到那一个，不会自动切换。
+          本页设置的是 <strong>any-deepseek 这一个 provider</strong>，与 DSH 其它设置无关。
+          它对外只提供一个模型：<span className="ad-mono">{model.name || 'DeepSeek V4.1 Flash'}</span>。
+          下面选中哪个渠道，请求就发到哪个——<strong>不会自动切换</strong>。
         </p>
       </header>
 
       {error !== null && (
-        <div className="ad-error" role="alert">加载失败：{error}</div>
+        <div className="ad-error" role="alert">操作未完成：{error}</div>
       )}
 
-      <section className="ad-section">
+      {/*
+        Two tabs, because the panel answers two questions asked at different times: "which relay
+        serves me, and does its key work" (setup) and "what has each relay cost" (review).
+        Stacked on one scroll, reading the cost table meant scrolling past every channel row.
+      */}
+      <div className="ad-tabs" role="tablist" aria-label="面板分页">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'channels'}
+          className={`ad-tab${tab === 'channels' ? ' ad-tab-on' : ''}`}
+          onClick={() => setTab('channels')}
+        >
+          渠道
+          {rows.length > 0 && <span className="ad-tabCount">{rows.length}</span>}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'usage'}
+          className={`ad-tab${tab === 'usage' ? ' ad-tab-on' : ''}`}
+          onClick={() => setTab('usage')}
+        >
+          用量
+        </button>
+      </div>
+
+      {tab === 'channels' && (
+      <section className="ad-section" role="tabpanel" aria-label="渠道">
         <div className="ad-sectionBar">
           <h3 className="ad-sectionTitle">渠道</h3>
           {/*
@@ -386,7 +444,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           </button>
         </div>
         {rows.length === 0 && (
-          <p className="ad-empty">还没有渠道。用下面的表单加一个。</p>
+          <p className="ad-empty">
+            还没有渠道。点下面的「添加渠道」，选一个规格、粘一个 key 就能用。
+          </p>
         )}
         <ul className="ad-rows" role="radiogroup" aria-label="选择当前渠道">
           {rows.map((row) => {
@@ -602,7 +662,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         {adding ? (
           <div className="ad-addForm">
             <label className="ad-field">
-              <span>规格</span>
+              <span>规格<em className="ad-req">必选</em></span>
               <select
                 className="ad-input"
                 value={newPreset}
@@ -635,6 +695,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   <option key={preset.id} value={preset.id}>{preset.displayName}</option>
                 ))}
               </select>
+              <span className="ad-fieldHelp">
+                规格决定三件事：请求发到哪个地址、用哪个上游模型名、走哪种协议。选它就不用再填这些。
+              </span>
             </label>
             <label className="ad-field">
               <span>渠道 id</span>
@@ -644,6 +707,11 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 placeholder={newPreset === '' ? '先选上面的规格' : suggestId(newPreset, rows)}
                 onChange={(event) => setNewId(event.target.value)}
               />
+              <span className="ad-fieldHelp">
+                配置里的键名，只能用小写字母、数字、<code className="ad-mono">-</code>、
+                <code className="ad-mono">_</code>。同一个规格可以加多次，第二个会自动变成
+                <code className="ad-mono"> -2</code>。
+              </span>
             </label>
             {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
             {/*
@@ -654,13 +722,17 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               runtime has honoured `label` since the beginning; the panel simply never asked.
             */}
             <label className="ad-field">
-              <span>显示名</span>
+              <span>显示名<em className="ad-opt">可空</em></span>
               <input
                 className="ad-input"
                 value={newLabel}
                 placeholder={newPreset === '' ? '先选上面的规格' : '例如「Open Design（主号）」'}
                 onChange={(event) => setNewLabel(event.target.value)}
               />
+              <span className="ad-fieldHelp">
+                只影响这里显示的名字。同一家开两个号时，靠它区分；留空就用规格默认名。
+                <strong>改名不动 id</strong>。
+              </span>
             </label>
             {/*
               🔴 The key, and nothing but the key.
@@ -671,7 +743,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               stores it on the channel; there is no name to invent and no second store to visit.
             */}
             <label className="ad-field">
-              <span>密钥</span>
+              <span>密钥<em className="ad-req">必选</em></span>
               <input
                 className="ad-input"
                 type="password"
@@ -680,10 +752,14 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 placeholder={newPreset === '' ? '先选上面的规格' : 'sk-…'}
                 onChange={(event) => setNewSecret(event.target.value)}
               />
+              <span className="ad-fieldHelp">
+                就是服务商给你的那串 key 本体，不需要先起个名字。
+              </span>
             </label>
-            <p className="ad-hint">
-              密钥写在本机 profile 配置里（<code className="ad-mono">channels.&lt;id&gt;.apiKey</code>）。
-              它<strong>不</strong>外传，但会因为配置文件而被看到——别把这个 profile 分享出去。
+            <p className="ad-hint ad-hint-warn">
+              保存位置：本机 profile 配置里的 <code className="ad-mono">channels.&lt;id&gt;.apiKey</code>。
+              它不联网外传，但会以明文出现在配置文件和 <code className="ad-mono">--dump-config</code> 输出里
+              ——<strong>别把这份 profile 发给别人</strong>。
             </p>
             <div className="ad-rowActions">
               <button
@@ -713,89 +789,101 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           </button>
         )}
         {current === '' && rows.length > 0 && (
-          <p className="ad-hint">尚未选择当前渠道，请求会以 NO_CHANNEL_SELECTED 失败。</p>
+          <p className="ad-hint">
+            还没选当前渠道 —— 现在每条请求都会以 <code className="ad-mono">NO_CHANNEL_SELECTED</code> 失败。
+            点任意一行左边的圆点即可选中。
+          </p>
         )}
       </section>
+      )}
 
-      <section className="ad-section">
-        <h3 className="ad-sectionTitle">用量</h3>
-        <div className="ad-tabs">
-          <button
-            type="button"
-            className={`ad-tab${group === 'channel' ? ' ad-tab-on' : ''}`}
-            onClick={() => setGroup('channel')}
-          >
-            按渠道
-          </button>
-          <button
-            type="button"
-            className={`ad-tab${group === 'day' ? ' ad-tab-on' : ''}`}
-            onClick={() => setGroup('day')}
-          >
-            按天
-          </button>
-          <button type="button" className="ad-tab ad-tab-refresh" onClick={() => { void refresh() }}>
-            刷新
-          </button>
+      {tab === 'usage' && (
+      <section className="ad-section" role="tabpanel" aria-label="用量">
+        <div className="ad-sectionBar">
+          <h3 className="ad-sectionTitle">用量</h3>
+          {/* Grouping is the only choice this table asks; 刷新 lives beside the choice it refreshes. */}
+          <div className="ad-segmented" role="group" aria-label="用量分组">
+            <button
+              type="button"
+              className={`ad-seg${group === 'channel' ? ' ad-seg-on' : ''}`}
+              onClick={() => setGroup('channel')}
+            >
+              按渠道
+            </button>
+            <button
+              type="button"
+              className={`ad-seg${group === 'day' ? ' ad-seg-on' : ''}`}
+              onClick={() => setGroup('day')}
+            >
+              按天
+            </button>
+            <button type="button" className="ad-seg ad-seg-refresh" onClick={() => { void refresh() }}>
+              刷新
+            </button>
+          </div>
         </div>
 
         {stats === null || stats.total.requests === 0 ? (
-          <p className="ad-empty">还没有用量记录。</p>
+          <p className="ad-empty">
+            还没有用量记录。跑一次对话，这里就会按渠道开始累计。
+          </p>
         ) : (
-          <table className="ad-table">
-            <thead>
-              <tr>
-                <th>{group === 'day' ? '日期' : '渠道'}</th>
-                <th className="ad-num">请求</th>
-                <th className="ad-num">失败</th>
-                <th className="ad-num">输入</th>
-                <th className="ad-num">缓存读</th>
-                <th className="ad-num">缓存写</th>
-                <th className="ad-num">输出</th>
-                <th className="ad-num">合计</th>
-                <th className="ad-num" title="生成阶段速度（不含首字等待）">速度</th>
-                <th className="ad-num" title="首字平均等待时间">首字</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.rows.map((row) => (
-                <tr key={row.key}>
-                  {/*
-                    The DISPLAY NAME, not the id. `key` is the row's identity (stable across
-                    renames) and `label` is what a human recognises — printing the id made this
-                    table disagree with the channel list above it about the same channel.
-                  */}
-                  <td>{row.label ?? row.key}</td>
-                  <td className="ad-num">{row.aggregate.requests}</td>
-                  <td className="ad-num">{row.aggregate.failures}</td>
-                  <td className="ad-num">{formatTokens(row.aggregate.input)}</td>
-                  <td className="ad-num">{formatTokens(row.aggregate.cacheRead)}</td>
-                  <td className="ad-num">{formatTokens(row.aggregate.cacheWrite)}</td>
-                  <td className="ad-num">{formatTokens(row.aggregate.output)}</td>
-                  <td className="ad-num">{formatTokens(row.aggregate.total)}</td>
-                  {/*
-                    Speed comes last, after the volume columns, because it is a different kind of
-                    number: the rest are totals, this one is a rate. `—` means "not measured" and
-                    is deliberately not `0`.
-                  */}
-                  <td className="ad-num">{formatSpeed(row.tokensPerSecond)}</td>
-                  <td className="ad-num">{formatDuration(row.firstTokenMs)}</td>
+          <div className="ad-tableWrap">
+            <table className="ad-table">
+              <thead>
+                <tr>
+                  <th>{group === 'day' ? '日期' : '渠道'}</th>
+                  <th className="ad-num">请求</th>
+                  <th className="ad-num">失败</th>
+                  <th className="ad-num">输入</th>
+                  <th className="ad-num">缓存读</th>
+                  <th className="ad-num">缓存写</th>
+                  <th className="ad-num">输出</th>
+                  <th className="ad-num">合计</th>
+                  <th className="ad-num" title="生成阶段速度（不含首字等待）">速度</th>
+                  <th className="ad-num" title="首字平均等待时间">首字</th>
                 </tr>
-              ))}
-              <tr className="ad-total">
-                <td>合计</td>
-                <td className="ad-num">{stats.total.requests}</td>
-                <td className="ad-num">{stats.total.failures}</td>
-                <td className="ad-num">{formatTokens(stats.total.input)}</td>
-                <td className="ad-num">{formatTokens(stats.total.cacheRead)}</td>
-                <td className="ad-num">{formatTokens(stats.total.cacheWrite)}</td>
-                <td className="ad-num">{formatTokens(stats.total.output)}</td>
-                <td className="ad-num">{formatTokens(stats.total.total)}</td>
-                <td className="ad-num">{formatSpeed(stats.totalSpeed)}</td>
-                <td className="ad-num">{formatDuration(stats.totalFirstTokenMs)}</td>
-              </tr>
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {stats.rows.map((row) => (
+                  <tr key={row.key}>
+                    {/*
+                      The DISPLAY NAME, not the id. `key` is the row's identity (stable across
+                      renames) and `label` is what a human recognises — printing the id made this
+                      table disagree with the channel list above it about the same channel.
+                    */}
+                    <td>{row.label ?? row.key}</td>
+                    <td className="ad-num">{row.aggregate.requests}</td>
+                    <td className="ad-num">{row.aggregate.failures}</td>
+                    <td className="ad-num">{formatTokens(row.aggregate.input)}</td>
+                    <td className="ad-num">{formatTokens(row.aggregate.cacheRead)}</td>
+                    <td className="ad-num">{formatTokens(row.aggregate.cacheWrite)}</td>
+                    <td className="ad-num">{formatTokens(row.aggregate.output)}</td>
+                    <td className="ad-num">{formatTokens(row.aggregate.total)}</td>
+                    {/*
+                      Speed comes last, after the volume columns, because it is a different kind of
+                      number: the rest are totals, this one is a rate. `—` means "not measured" and
+                      is deliberately not `0`.
+                    */}
+                    <td className="ad-num">{formatSpeed(row.tokensPerSecond)}</td>
+                    <td className="ad-num">{formatDuration(row.firstTokenMs)}</td>
+                  </tr>
+                ))}
+                <tr className="ad-total">
+                  <td>合计</td>
+                  <td className="ad-num">{stats.total.requests}</td>
+                  <td className="ad-num">{stats.total.failures}</td>
+                  <td className="ad-num">{formatTokens(stats.total.input)}</td>
+                  <td className="ad-num">{formatTokens(stats.total.cacheRead)}</td>
+                  <td className="ad-num">{formatTokens(stats.total.cacheWrite)}</td>
+                  <td className="ad-num">{formatTokens(stats.total.output)}</td>
+                  <td className="ad-num">{formatTokens(stats.total.total)}</td>
+                  <td className="ad-num">{formatSpeed(stats.totalSpeed)}</td>
+                  <td className="ad-num">{formatDuration(stats.totalFirstTokenMs)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         )}
 
         {/*
@@ -803,12 +891,29 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           a reader who sums the wrong columns concludes the input is being under-reported.
         */}
         <p className="ad-note">
-          口径：输入 = 未命中缓存的输入；缓存读 / 写分列，三者相加才是计费输入。
+          口径：<strong>输入</strong>只算未命中缓存的输入；缓存读 / 缓存写单独成列，
+          三者相加才是<strong>计费输入</strong>。
+          速度只算生成阶段（总时长减去首字等待），<span className="ad-mono">—</span> 表示没测到，不是 0。
           {stats !== null && stats.total.unreported > 0 && (
-            <> 另有 {stats.total.unreported} 次请求上游未回报用量（不计入合计）。</>
+            <> 另有 {stats.total.unreported} 次请求上游未回报用量，不计入合计。</>
           )}
         </p>
       </section>
+      )}
+
+      {/*
+        The footer states what this thing is and where it lives. A user deciding whether to fork
+        it, add a relay or fix a rough edge should not have to search for the source, and a user
+        wondering "is this a first-party thing?" should get the answer here rather than infer it.
+      */}
+      <footer className="ad-foot">
+        <span className="ad-footNote">
+          开源小工具，MIT 许可 —— 欢迎改、欢迎加渠道。
+        </span>
+        <a className="ad-footLink" href={REPO_URL} target="_blank" rel="noreferrer">
+          {REPO_URL.replace('https://github.com/', 'github.com/')}
+        </a>
+      </footer>
     </div>
   )
 }

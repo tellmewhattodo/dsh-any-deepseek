@@ -1,172 +1,248 @@
 # dsh-any-deepseek
 
-One **DeepSeek V4.1 Flash** provider for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+把多家 DeepSeek 中转站收成**一个** provider、**一个**模型，在设置面板里粘 key、点一下切换。
 
-Instead of configuring every third-party DeepSeek relay as its own provider, install one
-provider with **exactly one model**, paste a key per channel in the settings panel, and pick
-which channel is live. Token usage is booked **per real upstream**, so you can see what each
-relay actually cost you in tokens.
+一个开源小工具（MIT）。欢迎改、欢迎加渠道 —— 见 [参与改进](#参与改进)。
 
-```text
-composer → any-deepseek / deepseek-v4.1-flash
-                │
-                ├─ channel selected in the panel (manual switch, v1)
-                ├─ key resolved from ctx.credentials per request
-                └─ forwarded as openai-completions to the channel's endpoint
+[English](README.en.md) · 中文（本页）
+
+![渠道分页](docs/screenshot-channels.png)
+
+---
+
+## 它解决的是什么问题
+
+你在好几个地方买了 DeepSeek 的额度：官方、某家中转、某个云厂商、某个同事推荐的便宜渠道。
+在 DeepSeek Harness 里，它们本来会变成**模型选择器里的 N 个条目**，而每次换渠道都要改配置、
+换模型名、换 key，还得自己记住这个月哪个渠道花了多少 token。
+
+装了这个插件之后：
+
+- 模型选择器里只有**一行**：`any-deepseek / deepseek-v4.1-flash`。
+- 下面挂**任意多个渠道**，每个渠道 = 一个端点 + 一个 key + 一个显示名。
+- 点哪个渠道的圆点，请求就发到哪个。**不会自动切换**（见 [为什么不做自动切换](#为什么不做自动切换)）。
+- 用量按**真实上游**分别记账。
+
+```
+                ┌── 渠道 A（官方）      ← 当前选中这个
+composer ──────►│
+  │             ├── 渠道 B（某中转）
+  ▼             └── 渠道 C（另一家）
+any-deepseek
+  / deepseek-v4.1-flash
+   （唯一对外模型）
 ```
 
-## Why
-
-- **One row in the model picker.** Your relay list stops being N provider groups.
-- **Only a key is user input.** Endpoint, upstream model id, context window, output cap and
-  compatibility flags ship in the plugin's own preset table.
-- **Per-channel accounting.** Input / cache-read / cache-write / output are recorded per
-  request and grouped by the channel that actually served it.
-- **Keys never enter configuration.** They live in the harness credential store; the config
-  only carries the reference name, exactly like the official Models page.
-
-## Install
+## 安装
 
 ```bash
 dsh plugin --profile web add dsh-any-deepseek
 ```
 
-Then restart DSH and open **Settings → Any DeepSeek**.
+然后**重启 DSH**，打开 设置 → **Any DeepSeek**。
 
-> **Restart is required for a first install** — the profile's layer list changed, and the
-> composing graph is built at boot. Editing an already-installed plugin's client half reloads
-> in the browser without a restart; its node half does not.
+> **首次安装必须重启**：profile 的分层列表变了，而装配图是启动时构建的。
+> 改已装插件的 client 半只需刷新浏览器；改它的 node 半则要重启。
 >
-> `dsh plugin` forwards its arguments to pnpm, so `add <spec>` accepts a registry name, a
-> tarball path, or a local directory (which installs as a symlink).
+> `dsh plugin` 会把参数转给 pnpm，所以 `add` 后面可以是 registry 名、tarball 路径或本地目录。
 
-## Configuration
+## 用法
 
-Everything lives under the `dsh-any-deepseek` settings namespace — that is the **profile entry
-id** from `cordis.patch.yml`, and it is what the panel binds to:
+### 加一个渠道
+
+点 **添加渠道**，只有两样东西是必填的：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| **规格** | ✅ | 决定端点地址、上游模型名、协议。选它这三样就不用填了。 |
+| **渠道 id** | ✅ | 配置里的键名，`[a-z0-9][a-z0-9_-]*`。同规格可加多次，第二个自动变成 `-2`。 |
+| **显示名** | — | 只影响界面显示。同一家开两个号时靠它区分。**改名不动 id。** |
+| **密钥** | ✅ | 服务商给你的那串 key 本体，不需要先起名字。 |
+
+内置规格：**DeepSeek 官方**、**OpenCode Go**、**Ollama Cloud**、**Open Design**、**CommandCode**。
+想接别的中转，见 [加一个新渠道](#加一个新渠道要改什么)。
+
+### 切换渠道
+
+点行左边的圆点。当前渠道有三重标识：左侧色条、更强边框、底色，另加 `aria-current`。
+
+**切换会让当前对话的 prompt 缓存失效**，所以尽量在自然的断点切，或新开一个会话。
+
+### 看余额
+
+点 **查询余额**（按需触发，不在打开面板时自动扫）。四种结果被严格区分，因为它们的下一步动作不同：
+
+| 显示 | 含义 |
+|---|---|
+| `642.44 CNY` / `55.48 USD` | 读到了金额 |
+| `rolling 100% · weekly 81% · monthly 75%` | 这家只给**订阅窗口**，不给钱 |
+| **余额未尽**（无余额接口，实测可用：…） | 这家没有余额接口，但**实测能用** ⇒ 账户没欠费。**不代表余额数字**（见下） |
+| 不支持查询 / 读取失败 / 未配置密钥 | 三种不同的"没有" |
+
+> ⚠️ **余额未尽 ≠ 余额还有多少。** 它是一次最小真实请求（消耗一两个 token）成功的结果，
+> 只证明三件事：端点在线、key 可用、账户**没有**因为欠费被拒（欠费会答 402/quota，不答 200）。
+> 所以面板只写「未尽」，**绝不编一个金额**——写 `0.00` 会被读成"你没钱了"，与事实正相反。
+
+> ⚠️ **绝不用 0 代替"读不到"。** 缺数字就报缺。"读不到"与"是空的"导致相反的行动。
+
+### 看用量
+
+![用量分页](docs/screenshot-usage.png)
+
+每个渠道一行，可以按渠道或按天分组。
+
+**口径**（面板里也印着）：harness 的 token 计数是**不相交**的 —— **输入**只算未命中缓存的输入，
+**缓存读** / **缓存写**单独成列，三者相加才是**计费输入**。把「输入」直接当总量会得出
+"输入被少报了"的错误结论。
+
+**速度**只算生成阶段（总时长减去首字等待）。把排队 + 首字 + 生成混成一个数，会让
+"想得久但吐得快"和"全程都慢"读数相同，而这两者的处理方式完全相反。
+`—` 表示没测到，**不是 0**。
+
+## 配置
+
+设置都在这一个命名空间下 —— 它是 `cordis.patch.yml` 里的 **profile 条目 id**，面板绑定的就是它：
 
 ```yaml
 dsh-any-deepseek:
-  current: opencode-go          # the live channel (manual)
+  current: opencode-go          # 当前渠道
   channels:
     opencode-go:
-      apiKey: sk-…              # the key itself
-    commandcode:
-      apiKey: sk-…              # the key itself
+      apiKey: sk-…              # key 本体
+    open-design:
+      preset: open-design
+      label: Open Design（主号）  # 可选，显示名
   usage:
     enabled: true
 ```
 
-`channels.<id>` may be either:
+`channels.<id>` 有两种写法：
 
-- **preset-backed** — `preset: opencode-go` plus optional overrides; or
-- **fully declared** — `baseURL` + `model` are required; `api` defaults to
-  `openai-completions`, and `contextWindow` / `maxTokens` fall back to documented defaults
-  (the panel shows a warning next to the row when a default was applied rather than declared).
+- **预设背书** — `preset: opencode-go`，可选覆盖若干字段；
+- **完全手写** — `baseURL` + `model` 必填，`api` 默认 `openai-completions`，
+  `contextWindow` / `maxTokens` 有文档值兜底（走兜底时面板会在该行显示 ⚠）。
 
-### Where the key lives
+### key 存在哪（请读完这段）
 
-`apiKey` holds the key **itself**, on the channel. The panel never asks you to invent a name for
-it — you paste the key, and it is written here.
+`apiKey` 存的是 **key 本人**，就在渠道条目上。面板不会让你给它起名字 —— 你粘 key，它就写在这儿。
 
-⚠️ **That means the key is in your profile configuration.** `dsh --dump-config` prints patch
-layers verbatim and does not redact, so a diagnostic dump, a `git diff` of the profile, or a
-pasted config includes it. Do not share the profile document. Environment-variable injection
-(`-e SOME_KEY=…`) is not consulted — nothing resolves a name.
+⚠️ **这意味着 key 在你的 profile 配置文件里。** `dsh --dump-config` 逐字打印 patch 层且
+**不脱敏**，所以一次诊断输出、一次 `git diff` 都会带上它。**别把 profile 文件发给别人。**
+环境变量注入（`-e SOME_KEY=…`）不会被查询 —— 没有任何地方去解析一个名字。
 
-`apiKeyEnv` is still **read** for configurations written before this change: when its value
-matches the credential-reference grammar (`^[A-Za-z_][A-Za-z0-9_]*$`) it is resolved as a name;
-when it does not, it cannot be a name, so it is adopted as the key itself. `apiKey` always wins
-when both are present, so re-keying through the panel is enough to migrate an entry.
+> 早期版本把 key 藏在"凭据引用名"后面，并提示你"到凭据中心设置" —— 而这个界面本身并不存在。
+> 现在的做法是：一个字段、一个存储、一次写入。
 
-A channel with no key still **appears** in the panel — that is how you find and fix it. Requests
-through it fail with `MISSING_CREDENTIAL`, and the row shows an unconfigured dot.
+`apiKeyEnv` 仍会**读**，为了兼容旧配置：值符合引用名语法（`^[A-Za-z_][A-Za-z0-9_]*$`）时当名字解析；
+不符合时不可能是名字，于是当 key 本体用。`apiKey` 存在时永远优先，所以在面板里重填一次 key
+就把旧条目迁移完了。
 
-### Channels vs. protocols
+没配 key 的渠道**照样出现在面板里** —— 那是你发现并修复它的方式。通过它发请求会失败
+（`MISSING_CREDENTIAL`），该行的状态点是空心的。
 
-`openai-completions` is the default and the recommended protocol: it is what almost every
-relay speaks, it exposes the largest compatibility surface (~20 switches), and its usage
-normalization already reconciles the three cache-token spellings relays use
-(`prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens`, top-level `cached_tokens`).
+### 协议
 
-Set `api` on one channel only when that relay speaks something else (`openai-responses`,
-`anthropic-messages`). The picker never changes per channel behind your back.
+`openai-completions` 是默认也是推荐：几乎所有中转都说它，兼容位最多（约 20 个），
+且 usage 的三种缓存字段拼写（`prompt_tokens_details.cached_tokens` /
+`prompt_cache_hit_tokens` / 顶层 `cached_tokens`）已由传输层归一。
 
-### Switching channels
+只有当某家真的说别的协议时才在**那一个渠道**上设 `api`（`openai-responses` / `anthropic-messages`）。
+面板永远不会背着你在渠道间改协议。
 
-v1 is deliberately manual. A channel that fails reports its error; it does not silently fail
-over to another one. Switching invalidates the prompt cache for the running conversation, so
-switch at a natural boundary (or start a new session).
+### 思考强度
 
-The current channel is marked on its row (left colour bar, stronger border, tinted background)
-rather than by a small badge — a single-choice list has to be readable at a glance.
-
-### Thinking level
-
-Each channel declares its selectable thinking levels, and the level picked in the harness is
-passed through to the relay:
+每个渠道声明自己支持哪些档位，harness 里选的档位会一路传到上游：
 
 ```
 harness reasoningEffort → pi-ai ThinkingLevel → model.thinkingLevelMap → wire value
 ```
 
-There is no mapping layer in this plugin: the `thinkingLevelMap` the transport applies **is**
-the mapping, and a second one here would drift from it. A level declared `null` is unsupported
-and is not offered in the picker.
+**本插件里没有第二层映射**：传输层用的 `thinkingLevelMap` **就是**映射层，再写一个必然与它漂移。
+声明成 `null` 的档位表示不支持，不会出现在选择器里。
 
-### Display names
+### 图片输入
 
-`label` is a free-form display name, and it is what tells two accounts on the same relay apart.
-Rename a channel from the panel; the channel **id** never changes, because the id is the
-channel's identity (its key and its `current` target hang off it).
+支持。两个渠道都可以收发图片，前提是宿主把 `input` 声明为含 `image` —— 该声明在**注册模型时**给出
+（`inputModalities`），不是写在请求处理里。这是个踩过的坑：能力是 provider 的属性，
+不是某条渠道或某次请求的属性。
 
-### Image input
+## 为什么不做自动切换
 
-Not supported yet, and declared as such. A harness `ImageBlock` carries only an
-`attachmentId`; turning that into request bytes requires the durable attachment service, which
-this adapter does not consult. Declaring image support anyway would make the harness stop
-substituting its placeholder text and drop the image silently — worse than declaring text-only.
+v1 刻意只做手动。一个渠道失败就**报它自己的错**，不会静默转到另一个：
 
-## Usage accounting
+- 静默切换会让"这次答案是谁给的"变得不可知，而用量表会照实记另一个渠道 —— 两处口径不一致。
+- 半途换渠道会让 prompt 缓存失效，成本比你省下的那次失败更高。
+- 失败是信息。把它藏起来，你就不知道某个渠道正在坏掉。
 
-The ledger is append-only JSONL, split by month, under the harness home:
+## 加一个新渠道要改什么
 
-```text
-~/.dsh/any-deepseek/usage-YYYY-MM.jsonl
+这是一个**实用小插件**，加渠道是最有价值的贡献 —— 大多数情况下只需要动一个文件。
+
+### 只加一个预设（最常见）
+
+改 [`src/presets.ts`](src/presets.ts)，往 `CHANNEL_PRESETS` 里加一条：
+
+```ts
+'your-relay': {
+  displayName: 'Your Relay',
+  api: 'openai-completions',
+  baseURL: 'https://your-relay.example/v1',
+  // 🔴 用**这家自己的**拼写。各家中转的模型名不同：
+  //    deepseek-v4.1-flash / deepseek/deepseek-v4.1-flash / deepseek-flash …
+  //    抄错不会报错，只会在第一次请求时被上游拒。
+  model: 'deepseek-v4.1-flash',
+  ...V41_FLASH_CAPS,
+  // 可选：这家有没有余额接口、是什么形状（见 src/balance.ts 的四种 shape）
+  // balance: { shape: 'openai-billing' },
+},
 ```
 
-One line per request:
+就够了 —— 面板的规格下拉会自动多出这一项。
 
-```json
-{"at":"2026-10-19T10:12:03+08:00","channel":"opencode-go","model":"deepseek-v4.1-flash","ok":true,"ms":4210,"firstTokenMs":810,"usage":{"input":812,"output":96,"cacheRead":40960,"cacheWrite":0,"reasoning":0,"total":41868}}
-```
+⚠️ **两条规矩**（都有实际代价）：
 
-`usage` is `null` when a relay does not report token counts — the panel shows `—`, never `0`,
-because a zero would read as "this request was free".
+1. **注释里不要写"我探过了"，除非真的探过。** 这个仓里曾经有一条
+   `Probed live: the billing pair answers` 的注释，而它从没被调用过，第一次真调用就 404。
+   **假证据比没有注释更坏**，因为它让下一个读者不再去查。
+2. **`model` 用上游的拼写，不是我们的 id。** 我们对外只暴露 `deepseek-v4.1-flash` 一个 id，
+   上游拼写由预设吸收 —— 这正是这个插件存在的理由。
 
-**Counting convention.** `TokenUsage` counts are *disjoint*: `input` is uncached input only,
-cache reads and writes are reported separately, and the three together are the billable input.
-The stats table states this next to the numbers.
+### 加一种余额形状（少见）
 
-## Development
+如果这家有余额接口但形状是新的一种，改 [`src/balance.ts`](src/balance.ts)：
+加一个 `shape`、加一个 `parseXxx()`、在 `balanceUrls()` 里给路径、在 `readBalance()` 里分发。
+`balanceUrls()` 是**唯一**知道路径的地方，所以预设无法与传输层意见相左。
+
+### 门禁（提交前必跑）
 
 ```bash
-pnpm install
-pnpm run typecheck     # host types come from pinned devDependencies
-pnpm run test          # pure layers only; no harness needed
+pnpm run typecheck     # 两个 tsconfig：node 半 + client 半
+pnpm run test          # 纯函数层，不需要 harness
 pnpm run build         # lib/index.js + lib/client.js
 ```
 
-The pure layers (`presets`, `channels`, `route`, `usage-ledger`) do not import the harness and
-are covered by the unit tests. The adapter and panel talk to the host through public seams
-only.
+改动要带**能变红的用例**。这个仓的规矩是：**判据必须承重** —— 把修复回滚，那条用例必须红；
+否则它只是装饰。仓里每条重要结论都附了它的负控制结果。
 
-## Boundaries
+## 已知边界
 
-- Does not modify the harness, and does not replace `deepseek-official` or `llm-pi-ai` routes.
-- Exposes exactly one model id. Upstream model ids differ per relay and are mapped in presets.
-- No cost estimation (no price table), no automatic failover (v1), no multi-model aggregation.
+- 不修改 harness，也不替代 `deepseek-official` / `llm-pi-ai` 路由。
+- 只暴露一个模型 id。上游模型 id 各家不同，由预设映射。
+- **不做费用估算**（没有价目表）。
+- **不做自动故障转移**（v1，见上）。
+- **不做多模型聚合** —— 这个插件就是"一个模型、多个来源"，不是模型路由器。
 
-## License
+## 参与改进
+
+欢迎 fork、提 issue、发 PR。特别是：
+
+- **加一家渠道** —— 见上，改一个文件。
+- **修一处文案** —— 面板上的每一句都应该是一个可验证的事实；读到含糊或过时的，直接改。
+- **报一个"装了但没反应"** —— 这类静默失效是本项目最花时间的一类缺陷，
+  复现步骤比任何猜测都值钱。
+
+源码：<https://github.com/tellmewhattodo/dsh-any-deepseek>
+
+## 许可
 
 MIT
