@@ -124,10 +124,13 @@ export interface BalanceWindow {
 /**
  * One channel's balance row.
  *
- * 🔴 The four statuses are deliberately distinct because they call for different actions:
+ * 🔴 The statuses are deliberately distinct because they call for different actions:
  *  · `ok`          — a number was read;
- *  · `unsupported` — this endpoint has no balance API at all (OpenCode Go today);
- *  · `unavailable` — it has one, but it did not answer as expected;
+ *  · `alive`       — no balance API, but a minimal live request succeeded ⇒ the endpoint serves
+ *                    and the credit is NOT exhausted. Says nothing about how much is left;
+ *  · `unsupported` — this endpoint has no balance API and the liveness check did not run (older
+ *                    server, or the channel was skipped);
+ *  · `unavailable` — a read was attempted and did not answer as expected;
  *  · `no-key`      — we never got to ask.
  * Collapsing any of them into "0" would claim the account is empty, which is the one reading
  * that would make someone stop using a channel that is fine.
@@ -145,6 +148,14 @@ export type BalanceRow =
     }
   }
   | { id: string; label: string; status: 'unsupported' | 'unavailable' | 'no-key'; detail: string; code?: string }
+  | {
+    id: string
+    label: string
+    status: 'alive'
+    ms: number
+    responded?: string
+    detail: string
+  }
 
 /** `/any-deepseek/balance` response. */
 export interface BalanceResponse {
@@ -172,15 +183,33 @@ export async function fetchBalances(): Promise<BalanceResponse> {
  *
  * Deliberately total: every status produces words, never an empty string. A blank cell beside a
  * working channel is indistinguishable from "zero balance" — the one thing this must never imply.
+ *
+ * 🔴 **`alive` is worded as 「余额未尽」, never as a number.** The check behind it is one minimal
+ * live request, which proves the endpoint serves and the account is not blocked for lack of
+ * credit. It does not measure an amount, so printing one — or printing `0.00` — would invent the
+ * very figure this status exists to avoid inventing (owner directive 2026-10-23: 「不支持查余额的，
+ * 改成直接测通，通则说明余额还是有的，没用完」).
  * @param row - one row from `/balance`.
  * @returns a short human label.
  */
 export function formatBalance(row: BalanceRow): string {
-  // Narrow on the discriminant FIRST. The three non-`ok` arms carry no `reading`, and separate
-  // early returns for them do not narrow the union for TypeScript — it still sees `reading` as
+  // Narrow on the discriminant FIRST. The non-`ok` arms carry no `reading`, and separate early
+  // returns for them do not narrow the union for TypeScript — it still sees `reading` as
   // possibly-absent further down.
+  if (row.status === 'alive') {
+    // The relay's own model name and the round-trip time are the evidence, so they travel with
+    // the verdict: "it answered" is a claim, "it answered as deepseek-flash in 1448ms" is proof.
+    const evidence = row.responded === undefined
+      ? `${Math.round(row.ms)}ms`
+      : `${row.responded} · ${Math.round(row.ms)}ms`
+    return `余额未尽（无余额接口，实测可用：${evidence}）`
+  }
   if (row.status !== 'ok') {
     if (row.status === 'no-key') return '未配置密钥'
+    // 🔴 A quota failure is an ANSWER, not an error: it is the liveness check reporting that the
+    // account is out of credit. Rendering it as 「读取失败」 would hide the one fact the check
+    // was run to discover.
+    if (row.code === 'QUOTA') return '余额不足（实测被拒）'
     if (row.status === 'unavailable') return row.code === 'HTTP_404' ? '不支持查询' : '读取失败'
     return '不支持查询'
   }

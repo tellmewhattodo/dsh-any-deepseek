@@ -102,7 +102,9 @@ export interface ChannelPreset {
    *
    * Absent means "this endpoint has no balance API we know of" — a real and common state, not an
    * omission. The panel says so explicitly rather than leaving a blank cell that could be read
-   * as zero.
+   * as zero, and then checks the endpoint is ALIVE with one minimal live request (owner directive
+   * 2026-10-23): "no amount is readable" and "the credit is spent" are different facts, and a
+   * successful call proves the second is not true. See `http.ts`'s `balanceRow`.
    */
   balance?: BalanceProbe
   /** One-line note for the panel, when the relay needs explaining. */
@@ -287,7 +289,8 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     ...V41_FLASH_CAPS,
     compat: { ...DEEPSEEK_THINKING_COMPAT },
     // Unverified: no published billing surface was found for this relay. Absent means the panel
-    // will say "no balance API" rather than guess at a shape and report a wrong number.
+    // will say "no balance API" rather than guess at a shape and report a wrong number; it then
+    // falls back to one minimal live request, so the row still answers "is this account usable".
   },
   ollama: {
     displayName: 'Ollama Cloud',
@@ -323,6 +326,10 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     // comment claiming it had been "probed live". It had not — the first real call returned 404.
     // A comment that asserts evidence nobody gathered is worse than no comment: it stops the next
     // reader from checking. The refutation lives here so the row is not re-added on a hunch.
+    //
+    // ⇒ The panel therefore has no amount to show for this relay, and checks liveness instead
+    // (`http.ts` `balanceRow`): 「余额未尽（无余额接口，实测可用…）」 with the serving model and the
+    // round-trip time as evidence, never a fabricated figure.
   },
   'deepseek-official': {
     displayName: 'DeepSeek Official',

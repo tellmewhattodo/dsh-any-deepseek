@@ -108,7 +108,10 @@ export interface ResolvedChannel {
    * How this endpoint's remaining balance can be read, when it can be.
    *
    * Absent means "no balance API" — a real state, not a missing value. See `presets.ts` for the
-   * three verified shapes and why OpenCode Go deliberately has none.
+   * four verified shapes. Note the two different kinds of "no number": OpenCode Go reports usage
+   * WINDOWS rather than money (it does have a surface), while Open Design publishes no surface at
+   * all (measured: seven candidates, all 404). The panel distinguishes them, and checks liveness
+   * for the latter instead of inventing an amount.
    */
   balance?: BalanceProbe
   /** Facts the user should see because a default was applied rather than declared. */

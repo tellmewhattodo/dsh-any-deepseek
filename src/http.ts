@@ -288,10 +288,11 @@ export function reportedName(text: string): string {
 /**
  * Fetch one channel's remaining balance from whatever surface it declares.
  *
- * 🔴 **Absence is a normal answer here, and is reported as such.** Three outcomes are kept apart
+ * 🔴 **Absence is a normal answer here, and is reported as such.** Outcomes are kept apart
  * because they mean different things to the user:
- *  · `unsupported` — the preset declares no balance shape (OpenCode Go: the provider has an open
- *    request for one, because today the only key-authenticated signal is an error at $0).
+ *  · `unsupported` — the preset declares no balance shape. This is no longer the end of the story
+ *    for the panel: `/{@link balanceRow}` turns it into a liveness verdict, because "the endpoint
+ *    will not tell me the amount" and "the account is fine" are different facts and both matter.
  *  · `unavailable` — a shape was declared but the endpoint did not answer as expected (404,
  *    non-JSON, unexpected body). The relay may simply not implement it.
  *  · `ok` — a reading, which itself may carry only a note (e.g. "unlimited, used $3.20").
@@ -379,6 +380,97 @@ export async function fetchBalance(
     }
   }
   return { status: 'ok', reading }
+}
+
+/**
+ * One row of `/balance`, as it travels to the panel.
+ *
+ * `alive` is the fourth outcome and exists because of an owner directive (2026-10-23):
+ * 「对于不支持查余额的，改成直接测通，通则说明余额还是有的，没用完，显示出来（消耗一两个token）」.
+ *
+ * 🔴 **`alive` is NOT a balance number and must never be rendered as one.** It is the result of a
+ * minimal real inference request, and it proves exactly three things: the key works, the endpoint
+ * serves, and the account is not blocked for lack of credit (a $0 account answers 402/quota, it
+ * does not answer 200). It says nothing about HOW MUCH is left. The panel wording therefore says
+ * 「余额未尽」 — "not exhausted" — which is the strongest true claim available here, and stops
+ * short of the number a reader might otherwise assume.
+ */
+export type BalanceRowWire =
+  | { id: string; label: string; status: 'ok'; reading: BalanceReading }
+  | { id: string; label: string; status: 'unsupported'; detail: string }
+  | { id: string; label: string; status: 'unavailable'; detail: string; code?: string }
+  | {
+    id: string
+    label: string
+    status: 'alive'
+    /** How long the liveness request took. */
+    ms: number
+    /** What the relay called its model — a serving endpoint answers with a name. */
+    responded?: string
+    detail: string
+  }
+
+/**
+ * The stated reason an `alive` row carries no number.
+ *
+ * Kept as a constant so the server and every reader of the payload say the same thing: this row
+ * is about liveness, not about a balance.
+ */
+export const ALIVE_DETAIL =
+  'this endpoint publishes no balance API; a minimal live request succeeded, '
+  + 'so it is serving and its credit is not exhausted (no amount is readable)'
+
+/**
+ * Build one `/balance` row, falling back to a liveness probe when there is no balance surface.
+ *
+ * 🔴 **The fallback spends tokens, so it is scoped as tightly as possible**: it runs ONLY when the
+ * balance surface is absent (`unsupported`), never for a channel whose balance API answered `ok`
+ * and never for one that exists but failed (`unavailable` — that is a "try again" state, and
+ * probing it would replace a transient error with a different-looking success).
+ *
+ * The cost is one prompt plus one output token on a completions channel (`max_tokens: 1` in
+ * {@link probeRequest}); the Responses cap is a ceiling, not a spend.
+ * @param channel - the resolved channel.
+ * @param key - its resolved credential (already resolved by the caller, so a probe and a real
+ *   request never read the key differently).
+ * @returns the row, always resolved — one dead relay must not blank the others.
+ */
+export async function balanceRow(
+  channel: ResolvedChannel,
+  key: string,
+): Promise<BalanceRowWire> {
+  const outcome = await fetchBalance(channel, key)
+  if (outcome.status !== 'unsupported') {
+    return { id: channel.id, label: channel.label, ...outcome }
+  }
+  const verdict = await probeChannel(channel, key, `probe:${channel.id}`)
+  if (!verdict.ok) {
+    /**
+     * The liveness request failed, so nothing was learned about the account.
+     *
+     * It is reported as `unavailable` rather than as a verdict of its own because that is what it
+     * is: we tried to find out and did not. `code` is passed through untouched, which is what lets
+     * the panel tell the one FAILURE THAT IS ACTUALLY AN ANSWER (`QUOTA` — the account is out of
+     * credit) from the ones that are just errors.
+     */
+    return {
+      id: channel.id,
+      label: channel.label,
+      status: 'unavailable',
+      detail: `no balance API, and the liveness request failed: ${verdict.message ?? verdict.code ?? 'unknown'}`,
+      ...verdict.code === undefined ? {} : { code: verdict.code },
+    }
+  }
+  return {
+    id: channel.id,
+    label: channel.label,
+    status: 'alive',
+    ms: verdict.ms,
+    ...verdict.responded === undefined || verdict.responded === ''
+      ? {}
+      : { responded: verdict.responded },
+    detail: ALIVE_DETAIL,
+  }
 }
 
 /** Map an HTTP status from a probe onto the same codes the runtime uses. */
@@ -554,10 +646,12 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
       /**
        * Remaining balance per channel.
        *
-       * GET because it reads and costs nothing at the provider (all three surfaces are plain
-       * account reads, not model calls). Every channel is attempted independently: one relay
-       * without a balance API, or one that is down, must not blank the others — the same rule the
-       * channel list follows for a broken entry.
+       * GET because it is a read, but 🔴 **it is no longer free**: a channel whose endpoint has no
+       * balance surface is now checked with one minimal live request (owner directive 2026-10-23),
+       * which costs a prompt plus one output token. The route stays GET because the panel's
+       * button is what triggers it — nothing here fires on render. Every channel is attempted
+       * independently: one relay without a balance API, or one that is down, must not blank the
+       * others — the same rule the channel list follows for a broken entry.
        */
       kind: 'exact',
       path: `${ROUTE_PREFIX}/balance`,
@@ -573,8 +667,9 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
             // No key means we cannot ask AT ALL — distinct from "the endpoint has no such API".
             return { id: channel.id, label: channel.label, status: 'no-key' as const, detail: 'no key configured' }
           }
-          const outcome = await fetchBalance(channel, key)
-          return { id: channel.id, label: channel.label, ...outcome }
+          // `balanceRow` may fall back to one minimal live request; see its doc comment for why
+          // that fallback is limited to the `unsupported` case.
+          return balanceRow(channel, key)
         }))
         json(res, 200, { channels: rows })
       },

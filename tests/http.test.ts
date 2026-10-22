@@ -29,6 +29,7 @@ import {
   probeRequest,
   reportedName,
   errorFieldValue,
+  balanceRow,
   type RouteDeps,
   type WebServerLike,
 } from '../src/http.js'
@@ -499,6 +500,140 @@ describe('probeChannel', () => {
       expect(sent.max_tokens).toBe(1)
       // The channel's own upstream spelling goes on the wire, not our advertised id.
       expect(sent.model).toBe('deepseek-v4.1-flash')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+})
+
+describe('balanceRow — a liveness check stands in for a balance that cannot be read', () => {
+  /**
+   * Owner directive (2026-10-23): 「对于不支持查余额的，改成直接测通，通则说明余额还是有的，没用完，
+   * 显示出来（消耗一两个token）」.
+   *
+   * 🔴 The whole point is that these are DIFFERENT claims, and the tests keep them apart:
+   *   · a balance number  = how much is left (requires a balance API);
+   *   · a live 200        = it serves and the credit is not exhausted (proves only the second).
+   * A 200 proves the account is not at zero, because an exhausted account answers 402/quota.
+   * It must never be rendered as an amount — that is the failure these tests exist to prevent.
+   */
+  const noBalance = (): ResolvedChannel => channel({ balance: undefined })
+
+  it('🔴 a channel with no balance API that ANSWERS becomes `alive`, not `unsupported`', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"model":"deepseek-flash","choices":[{"message":{"content":"p"}}]}', { status: 200 }),
+    )
+    try {
+      const row = await balanceRow(noBalance(), 'sk-x')
+      expect(row.status).toBe('alive')
+      // The evidence travels with the verdict: "it answered" is a claim, "it answered as
+      // deepseek-flash" is proof.
+      expect(row).toMatchObject({ responded: 'deepseek-flash' })
+      expect(row.status === 'alive' ? row.ms : -1).toBeGreaterThanOrEqual(0)
+      // 🔴 No amount is fabricated on this path.
+      expect(JSON.stringify(row)).not.toMatch(/"amounts"|"remaining"/)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('🔴 a QUOTA refusal is the answer "out of credit", not a generic read failure', async () => {
+    // This is the one failure that is really an ANSWER: the liveness check discovered the exact
+    // fact it was run to discover. Reporting it as `TRANSPORT`/`读取失败` would throw that away.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"error":{"message":"insufficient quota"}}', { status: 402 }),
+    )
+    try {
+      const row = await balanceRow(noBalance(), 'sk-x')
+      expect(row.status).toBe('unavailable')
+      expect(row.status !== 'ok' && 'code' in row ? row.code : undefined).toBe('QUOTA')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('🔴 does NOT spend a probe when the balance API already answered', async () => {
+    // The fallback costs tokens. A channel that just reported a real number must not also be
+    // charged for a live request — "the read worked" is not a reason to buy a second answer.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const target = String(url)
+      if (target.includes('/user/balance')) {
+        return new Response(JSON.stringify({
+          is_available: true,
+          balance_infos: [{ currency: 'CNY', total_balance: '12.00' }],
+        }), { status: 200 })
+      }
+      // Any inference call here would mean the fallback ran when it should not have.
+      return new Response('{"model":"should-not-be-called"}', { status: 200 })
+    })
+    try {
+      const row = await balanceRow(channel({ balance: { shape: 'deepseek' } }), 'sk-x')
+      expect(row.status).toBe('ok')
+      const calls = fetchSpy.mock.calls.map((call) => String(call[0]))
+      expect(calls.some((url) => url.includes('/chat/completions'))).toBe(false)
+      expect(calls.some((url) => url.includes('/responses'))).toBe(false)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('🔴 does NOT probe a channel whose balance API exists but FAILED', async () => {
+    // `unavailable` means "try again" — the surface is there. Replacing a transient read error
+    // with a different-looking success would hide a real outage behind a green row.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const target = String(url)
+      if (target.includes('/user/balance')) return new Response('boom', { status: 500 })
+      return new Response('{"model":"should-not-be-called"}', { status: 200 })
+    })
+    try {
+      const row = await balanceRow(channel({ balance: { shape: 'deepseek' } }), 'sk-x')
+      expect(row.status).toBe('unavailable')
+      const calls = fetchSpy.mock.calls.map((call) => String(call[0]))
+      expect(calls.some((url) => url.includes('/chat/completions'))).toBe(false)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('a transport failure during liveness stays `unavailable`, never `alive`', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
+    try {
+      const row = await balanceRow(noBalance(), 'sk-x')
+      expect(row.status).toBe('unavailable')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+})
+
+describe('GET /balance', () => {
+  it('🔴 a channel with no balance API comes back `alive` through the ROUTE, not just the helper', async () => {
+    // Driving `balanceRow` directly proves the rule; this proves the route is wired to it. The
+    // two are different failures — the panel reads the route.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"model":"deepseek-flash","choices":[{"message":{"content":"p"}}]}', { status: 200 }),
+    )
+    try {
+      const { call } = mount({ channels: () => [channel({ balance: undefined })] })
+      const response = await call(`${ROUTE_PREFIX}/balance`)
+      expect(response.status).toBe(200)
+      const row = (response.body as { channels: Array<{ status: string }> }).channels[0]
+      expect(row?.status).toBe('alive')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('keeps `no-key` ahead of any network call', async () => {
+    // Nothing to ask with: this must not fall through to the liveness check and report a 401
+    // as though the account were broken.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      const { call } = mount({ channels: () => [channel({ credential: { kind: 'none' } })] })
+      const response = await call(`${ROUTE_PREFIX}/balance`)
+      const row = (response.body as { channels: Array<{ status: string }> }).channels[0]
+      expect(row?.status).toBe('no-key')
+      expect(fetchSpy).not.toHaveBeenCalled()
     } finally {
       fetchSpy.mockRestore()
     }

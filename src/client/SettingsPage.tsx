@@ -369,13 +369,17 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           <h3 className="ad-sectionTitle">渠道</h3>
           {/*
             On demand, because it calls out to every provider's account surface. The label says
-            余额 rather than 刷新 so it is clear this may spend a round-trip per relay — and that
-            some relays will answer "不支持查询", which is information too.
+            余额 rather than 刷新 so it is clear this may spend a round-trip per relay.
+
+            🔴 It may also spend TOKENS: a channel with no balance API is checked with one minimal
+            live request instead (owner directive 2026-10-23). The title says so, because a button
+            that quietly costs money is worse than one that cannot be clicked.
           */}
           <button
             type="button"
             className="ad-link"
             disabled={balancesLoading || rows.length === 0}
+            title="无余额接口的渠道会用一次最小真实请求测通（消耗一两个 token）"
             onClick={() => { void refreshBalances() }}
           >
             {balancesLoading ? '查询余额中…' : '查询余额'}
@@ -530,10 +534,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     {/*
                       Remaining balance, when this endpoint exposes one.
 
-                      🔴 Three different silences, kept distinct: `undefined` = not fetched yet
-                      (nothing shown), `unsupported` = the endpoint has no balance API, `unavailable`
-                      = it has one but did not answer. None of them is rendered as a number,
-                      because "0.00" would read as "you are out of credit".
+                      🔴 Four different silences, kept distinct: `undefined` = not fetched yet
+                      (nothing shown), `unsupported` = no balance API and no liveness check ran,
+                      `alive` = no balance API but a minimal live request SUCCEEDED ⇒ the account
+                      still has credit (no amount is claimed), `unavailable` = it was tried and did
+                      not answer. None of them is rendered as a number, because "0.00" would read
+                      as "you are out of credit".
 
                       Fetched on demand via the 查询余额 button — not on mount — so opening the panel
                       to rename something does not fan out a request to every relay.
