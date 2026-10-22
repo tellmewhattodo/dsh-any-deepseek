@@ -113,9 +113,15 @@ export function probeRequest(channel: ResolvedChannel): { path: string; body: un
   if (channel.api === 'openai-responses') {
     // Responses takes a plain `input` and caps output with `max_output_tokens`; `max_tokens` is a
     // completions-only spelling.
+    //
+    // 🔴 The cap must leave room for the THINKING BLOCK. deepseek-flash returns a `reasoning`
+    // item before the message, so a cap of 16 produced `status:"incomplete"` with
+    // `incomplete_details.reason:"max_output_tokens"` and no visible answer — measured on the
+    // first real probe. A probe that always truncates cannot distinguish "works" from "works
+    // only until it is asked anything". 256 is a prompt plus a short reply, still cheap.
     return {
       path: '/responses',
-      body: { model: channel.model, input: 'ping', max_output_tokens: 16, stream: false },
+      body: { model: channel.model, input: 'ping', max_output_tokens: 256, stream: false },
     }
   }
   if (channel.api === 'anthropic-messages') {
@@ -186,9 +192,17 @@ export async function probeChannel(
         message: text.slice(0, 400),
       }
     }
-    // A relay that answers 200 with a body error is still a failed probe.
-    if (text.includes('"error"')) {
-      return { ok: false, ms, code: 'SERVER', message: text.slice(0, 400) }
+    // A relay that answers 200 with a body carrying a REAL error is still a failed probe.
+    //
+    // 🔴 This used to be `text.includes('"error"')`, and that substring test is wrong: the
+    // Responses API returns `"error": null` on SUCCESS (measured — a real 200 from
+    // api.deepseek.com has `{object:"response", status:"incomplete", error:null, output:[…]}`).
+    // So every successful Responses probe was reported as `SERVER` while the channel was in fact
+    // working. A field's PRESENCE is not its VALUE — the same lesson as reading `apiKeyEnv` for a
+    // name when it held a key.
+    const bodyError = errorFieldValue(text)
+    if (bodyError !== undefined) {
+      return { ok: false, ms, code: 'SERVER', message: bodyError.slice(0, 400) }
     }
     return { ok: true, ms, responded: reportedName(text) }
   } catch (error) {
@@ -199,6 +213,27 @@ export async function probeChannel(
       message: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/**
+ * The body's `error` value, when it is actually an error.
+ *
+ * Returns `undefined` for a missing field AND for an explicit `null` — both mean "no error".
+ * A non-null value (object or string) is returned as JSON text for the panel to show.
+ * @param text - the raw response body.
+ * @returns the error as text, or undefined when the body reports no error.
+ */
+export function errorFieldValue(text: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    // Not JSON: fall back to the old presence test, which is safe for a non-JSON body.
+    return text.includes('"error"') ? text : undefined
+  }
+  const candidate = (parsed as { error?: unknown } | null)?.error
+  if (candidate === undefined || candidate === null) return undefined
+  return typeof candidate === 'string' ? candidate : JSON.stringify(candidate)
 }
 
 /**

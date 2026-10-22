@@ -28,6 +28,7 @@ import {
   probeChannel,
   probeRequest,
   reportedName,
+  errorFieldValue,
   type RouteDeps,
   type WebServerLike,
 } from '../src/http.js'
@@ -363,6 +364,14 @@ describe('probeRequest — a probe must speak the channel\'s protocol', () => {
     expect(body.max_output_tokens).toBeTypeOf('number')
   })
 
+  it('🔴 leaves room for the THINKING block, so the probe is not always truncated', () => {
+    // Measured on the first real probe: with a cap of 16, deepseek-flash returned a `reasoning`
+    // item and `status:"incomplete"` / `reason:"max_output_tokens"` with no visible answer — the
+    // probe could never distinguish "works" from "works only until asked anything".
+    const body = probeRequest(channel({ api: 'openai-responses' })).body as Record<string, number>
+    expect(body.max_output_tokens).toBeGreaterThanOrEqual(256)
+  })
+
   it('a completions channel keeps /chat/completions and max_tokens', () => {
     const request = probeRequest(channel({ api: 'openai-completions' }))
     expect(request.path).toBe('/chat/completions')
@@ -373,6 +382,42 @@ describe('probeRequest — a probe must speak the channel\'s protocol', () => {
     const request = probeRequest(channel({ api: 'anthropic-messages' }))
     expect(request.path).toBe('/messages')
     expect((request.body as Record<string, unknown>).max_tokens).toBeTypeOf('number')
+  })
+})
+
+describe('errorFieldValue — a field being PRESENT is not it being an ERROR', () => {
+  /**
+   * 🔴 Measured on a real 200 from api.deepseek.com/responses:
+   *   {"object":"response","status":"incomplete","error":null,"output":[{"type":"reasoning"}…]}
+   * The probe's test was `text.includes('"error"')`, so that SUCCESS was reported as `SERVER`
+   * while the channel was working perfectly. A substring cannot tell a null from a value.
+   */
+  it('🔴 treats `"error": null` as NO error (the real success shape)', () => {
+    const text = JSON.stringify({
+      object: 'response',
+      status: 'incomplete',
+      error: null,
+      output: [{ type: 'reasoning' }],
+    })
+    expect(errorFieldValue(text)).toBeUndefined()
+  })
+
+  it('treats a missing error field as no error', () => {
+    expect(errorFieldValue(JSON.stringify({ choices: [] }))).toBeUndefined()
+  })
+
+  it('reports a REAL error object', () => {
+    const text = JSON.stringify({ error: { message: 'bad key', type: 'invalid_request_error' } })
+    expect(errorFieldValue(text)).toContain('bad key')
+  })
+
+  it('reports a real error string', () => {
+    expect(errorFieldValue(JSON.stringify({ error: 'boom' }))).toBe('boom')
+  })
+
+  it('falls back to the presence test for a non-JSON body', () => {
+    expect(errorFieldValue('<html>bad gateway</html>')).toBeUndefined()
+    expect(errorFieldValue('something "error" happened')).toBeDefined()
   })
 })
 
