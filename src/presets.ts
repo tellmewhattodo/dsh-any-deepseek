@@ -226,7 +226,13 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     displayName: 'DeepSeek Official',
     api: 'openai-completions',
     baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-v4.1-flash',
+    // 🔴 DeepSeek's own API does NOT accept the id the relays use. Measured from its own
+    // rejection (owner report, 2026-10-22):
+    //   "The supported API model names are deepseek-flash, deepseek-v4-pro,
+    //    but you passed deepseek-v4.1-flash."
+    // This is precisely the per-relay id divergence this plugin exists to absorb: each preset
+    // carries the spelling ITS endpoint accepts, and the advertised id never reaches the wire.
+    model: 'deepseek-flash',
     ...V41_FLASH_CAPS,
   },
 }

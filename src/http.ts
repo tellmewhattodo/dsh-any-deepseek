@@ -250,13 +250,32 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
         const rows = group === 'day'
           ? summarize(entries, (entry) => dayKey(new Date(entry.at)))
           : summarize(entries, (entry) => entry.channel)
+        /**
+         * 🔴 Label each row with the channel's DISPLAY NAME, not its id.
+         *
+         * Owner report (2026-10-22): 「统计要按显示名称来」. The ledger keys rows by the channel
+         * id because that is the channel's identity — it must not change when a user renames a
+         * channel (decision 37: renaming touches `label`, never `id`). But the id is an
+         * implementation handle, and showing it makes the table disagree with the list above it,
+         * where the same channel appears under its display name.
+         *
+         * Resolution is done here, at read time, from the LIVE channel list — so a rename is
+         * reflected immediately in historical rows too, with no ledger rewrite. A row whose
+         * channel no longer exists keeps its raw id: that usage is real and must stay visible,
+         * and inventing a name for a channel that is gone would be worse than the id.
+         */
+        const labels = new Map(deps.channels().map((channel) => [channel.id, channel.label]))
+        const named = rows.map((row) => ({
+          ...row,
+          label: group === 'day' ? row.key : labels.get(row.key) ?? row.key,
+        }))
         json(res, 200, {
           range: {
             from: from?.toISOString() ?? null,
             to: to?.toISOString() ?? null,
             group,
           },
-          rows,
+          rows: named,
           total: totalOf(rows),
           // Stated in the payload so any consumer repeats it rather than inventing its own.
           note: 'input is uncached input only; billable input = input + cacheRead + cacheWrite',

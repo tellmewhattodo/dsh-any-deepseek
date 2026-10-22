@@ -685,7 +685,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             <tbody>
               {stats.rows.map((row) => (
                 <tr key={row.key}>
-                  <td>{row.key}</td>
+                  {/*
+                    The DISPLAY NAME, not the id. `key` is the row's identity (stable across
+                    renames) and `label` is what a human recognises — printing the id made this
+                    table disagree with the channel list above it about the same channel.
+                  */}
+                  <td>{row.label ?? row.key}</td>
                   <td className="ad-num">{row.aggregate.requests}</td>
                   <td className="ad-num">{row.aggregate.failures}</td>
                   <td className="ad-num">{formatTokens(row.aggregate.input)}</td>

@@ -82,4 +82,17 @@ describe('presets', () => {
     // an explicit answer instead of an invented one.
     expect(preset?.reasoningEfforts?.off).toBeNull()
   })
+
+  it('🔴 each preset carries the model id ITS endpoint accepts', () => {
+    // Owner report (2026-10-22), straight from DeepSeek's own rejection:
+    //   "The supported API model names are deepseek-flash, deepseek-v4-pro,
+    //    but you passed deepseek-v4.1-flash."
+    // This is exactly the divergence the plugin exists to absorb — every relay spells the same
+    // model differently — so the table must be pinned per endpoint, not derived by copy-paste.
+    expect(CHANNEL_PRESETS['deepseek-official']?.model).toBe('deepseek-flash')
+    // The relays that DO take the long id keep it; the pin is per endpoint, not a global change.
+    expect(CHANNEL_PRESETS['open-design']?.model).toBe('deepseek-v4.1-flash')
+    // CommandCode namespaces its ids by vendor — a spelling no other preset uses.
+    expect(CHANNEL_PRESETS.commandcode?.model).toBe('deepseek/deepseek-v4.1-flash')
+  })
 })

@@ -40,7 +40,23 @@ export interface ChannelsResponse {
 
 /** One aggregate row. Mirrors the ledger's disjoint counting convention. */
 export interface StatsRow {
+  /**
+   * The group key: the channel **id** (or a `YYYY-MM-DD` date).
+   *
+   * Kept as the row's identity — it is stable across renames — but never rendered on its own:
+   * {@link label} is what the reader sees.
+   */
   key: string
+  /**
+   * Human-readable row name, resolved by the server from the live channel list.
+   *
+   * 🔴 The panel used to print `key` directly, so the usage table showed channel ids (`open-design`)
+   * while the channel list above it showed display names (`Open Design-1`) — the same channel under
+   * two different names on one screen. Owner report (2026-10-22): 「统计要按显示名称来」.
+   *
+   * Optional only so an older server response still renders; the panel falls back to `key`.
+   */
+  label?: string
   aggregate: {
     requests: number
     failures: number

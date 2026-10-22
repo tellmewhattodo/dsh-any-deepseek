@@ -18,7 +18,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -240,6 +240,54 @@ describe('GET /stats', () => {
     // error the user cannot act on.
     expect(response.status).toBe(200)
     expect((response.body as { range: { from: string | null } }).range.from).toBeNull()
+  })
+
+  describe('🔴 rows carry the channel DISPLAY NAME (owner: 「统计要按显示名称来」)', () => {
+    /** Write one ledger entry for `channelId` into a temp dir and serve stats from it. */
+    const withLedger = async (
+      channelId: string,
+      channels: ResolvedChannel[],
+    ): Promise<Array<{ key: string; label?: string }>> => {
+      const dir = mkdtempSync(join(tmpdir(), 'any-deepseek-stats-'))
+      writeFileSync(
+        join(dir, 'usage-2026-10.jsonl'),
+        `${JSON.stringify({
+          at: '2026-10-22T10:00:00.000+08:00',
+          channel: channelId,
+          model: 'deepseek-v4.1-flash',
+          ok: true,
+          ms: 100,
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+        })}\n`,
+        'utf8',
+      )
+      const { call } = mount({ ledgerDir: () => dir, channels: () => channels })
+      const response = await call(`${ROUTE_PREFIX}/stats`)
+      return (response.body as { rows: Array<{ key: string; label?: string }> }).rows
+    }
+
+    it('prints the label, while keeping the id as the row key', async () => {
+      // The id is the channel's identity (renaming must never touch it), but it is an
+      // implementation handle: showing it made the usage table disagree with the channel list
+      // directly above it about the very same channel.
+      const rows = await withLedger('open-design', [channel({ id: 'open-design', label: 'Open Design-1' })])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.key).toBe('open-design')
+      expect(rows[0]?.label).toBe('Open Design-1')
+    })
+
+    it('🔴 a rename shows up in HISTORICAL rows without rewriting the ledger', async () => {
+      // Resolution happens at read time from the live channel list, which is what makes this
+      // free: the old entry still says `open-design`, the panel says the new name.
+      const rows = await withLedger('open-design', [channel({ id: 'open-design', label: 'Renamed Relay' })])
+      expect(rows[0]?.label).toBe('Renamed Relay')
+    })
+
+    it('falls back to the id when the channel is gone — real usage must stay visible', async () => {
+      const rows = await withLedger('deleted-one', [])
+      expect(rows[0]?.key).toBe('deleted-one')
+      expect(rows[0]?.label).toBe('deleted-one')
+    })
   })
 })
 
