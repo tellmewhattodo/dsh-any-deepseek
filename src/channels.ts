@@ -36,7 +36,20 @@ export interface ChannelEntry {
   baseURL?: string
   /** Upstream model id. Required for a channel that names no preset. */
   model?: string
-  /** Credential reference (environment-variable name). Required. */
+  /**
+   * The key itself, stored in the entry.
+   *
+   * 🔴 Prefer this over {@link apiKeyEnv}. Owner decision 2026-10-21: the panel takes the key the
+   * user has and writes it here — no invented reference name, no second store to consult. The
+   * accepted cost (a key visible in `--dump-config` output and in the profile patch) is recorded
+   * on `ChannelConfigSchema`.
+   */
+  apiKey?: string
+  /**
+   * Legacy: a credential reference name, resolved through the harness credential seam or the
+   * process environment. Still honoured so a configuration written before the change keeps
+   * working, but the panel no longer produces one.
+   */
   apiKeyEnv?: string
   /**
    * @deprecated Retired. Kept in the schema only so an existing configuration that still carries
@@ -67,7 +80,23 @@ export interface ResolvedChannel {
   baseURL: string
   /** Upstream model id, as the relay spells it. */
   model: string
-  apiKeyEnv: string
+  /**
+   * How this channel authenticates.
+   *
+   * A discriminated shape rather than two optional strings, so no caller can read the wrong one
+   * and so "no key at all" is a state the type forces someone to handle.
+   */
+  credential:
+    | { kind: 'literal'; value: string }
+    | { kind: 'reference'; ref: string }
+    | { kind: 'none' }
+  /**
+   * Preset id this channel was built from, when it named one.
+   *
+   * Kept through resolution so the panel can label a channel it did not fully recognise, and so
+   * a future preset change can be reasoned about per channel.
+   */
+  preset?: string
   contextWindow: number
   maxTokens: number
   input: ChannelModality[]
@@ -83,7 +112,6 @@ export interface ChannelProblem {
   id: string
   code:
     | 'UNKNOWN_PRESET'
-    | 'MISSING_API_KEY_REF'
     | 'MISSING_FIELD'
     | 'INVALID_API'
     | 'UNKNOWN_KEY'
@@ -121,6 +149,7 @@ const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'api',
   'baseURL',
   'model',
+  'apiKey',
   'apiKeyEnv',
   'enabled',
   'contextWindow',
@@ -139,6 +168,29 @@ function nonEmpty(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * The grammar a credential REFERENCE name must match.
+ *
+ * Transcribed from the harness's own credential seam
+ * (`@deepseek-ai/dsh-credentials` → `REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/`).
+ *
+ * This plugin no longer WRITES references (the panel stores the key itself), but it still READS
+ * them, and the grammar is what lets the read distinguish the two shapes. A string that cannot be
+ * an environment-variable name cannot be a reference — so when one appears in `apiKeyEnv` it can
+ * only be a value in the wrong slot, which is a repairable configuration error rather than a
+ * mystery.
+ */
+export const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * Whether a string could name a credential reference at all.
+ * @param value - candidate name.
+ * @returns true when the field can be read as a reference.
+ */
+export function isCredentialRefName(value: string): boolean {
+  return CREDENTIAL_REF_PATTERN.test(value)
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -186,17 +238,30 @@ export function resolveChannel(
     }
   }
 
-  const apiKeyEnv = nonEmpty(entry.apiKeyEnv)
-  if (apiKeyEnv === undefined) {
-    return {
-      ok: false,
-      problem: {
-        id,
-        code: 'MISSING_API_KEY_REF',
-        detail: 'apiKeyEnv is required: a channel without a credential reference cannot authenticate',
-      },
-    }
-  }
+  /**
+   * How this channel authenticates — never a reason to fail resolution.
+   *
+   * 🔴 A channel with no key still RESOLVES. The panel has to be able to show it (that is how the
+   * user gets to fix it), and the model directory must not depend on a secret being present
+   * (decision 26: a provider that vanishes when unconfigured looks exactly like one that is not
+   * installed). A missing key is answered per request — `MISSING_CREDENTIAL` — and per row.
+   *
+   * Migration, by grammar: `apiKey` wins when present. Otherwise `apiKeyEnv` is read as a
+   * reference ONLY when it matches the host's reference grammar. A string that cannot be a name
+   * is a key in the wrong slot — an observed state, since the previous version of this panel
+   * asked for a name and one user's YAML holds `sk-…` there. Adopting it is a repair, not a
+   * guess: no environment variable can have that spelling.
+   */
+  const literal = nonEmpty(entry.apiKey)
+  const legacy = nonEmpty(entry.apiKeyEnv)
+  const credential: ResolvedChannel['credential'] =
+    literal !== undefined
+      ? { kind: 'literal', value: literal }
+      : legacy === undefined
+        ? { kind: 'none' }
+        : isCredentialRefName(legacy)
+          ? { kind: 'reference', ref: legacy }
+          : { kind: 'literal', value: legacy }
 
   const presetId = nonEmpty(entry.preset)
   const preset = presetId === undefined ? undefined : presetById(presetId)
@@ -266,7 +331,8 @@ export function resolveChannel(
       api: apiRaw as ChannelApi,
       baseURL: baseURL as string,
       model: model as string,
-      apiKeyEnv,
+      credential,
+      ...presetId === undefined ? {} : { preset: presetId },
       contextWindow,
       maxTokens,
       input,

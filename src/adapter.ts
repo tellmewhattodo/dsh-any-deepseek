@@ -67,7 +67,12 @@ export interface AdapterDeps {
   channels: () => readonly ResolvedChannel[]
   /** The configured channel id. */
   current: () => string | undefined
-  /** Resolve a credential reference to its value; undefined when unconfigured. */
+  /**
+   * Resolve a credential REFERENCE name to its value; undefined when unconfigured.
+   *
+   * Only consulted for `credential.kind === 'reference'` (a legacy entry). A literal key is
+   * carried by the channel itself and never travels through this seam.
+   */
   resolveKey: (ref: string) => Promise<string | undefined>
   /** Record one finished request. Must never throw. */
   record: (entry: LedgerEntry) => Promise<void>
@@ -553,8 +558,13 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     }
     channel = selection.channel
 
-    // 2. The key, resolved per request so a rotation reaches the next call.
-    const key = await this.deps.resolveKey(channel.apiKeyEnv)
+    // 2. The key. A literal one is read from the channel entry; a legacy reference is resolved
+    //    per request so a rotation reaches the next call.
+    const key = channel.credential.kind === 'literal'
+      ? channel.credential.value
+      : channel.credential.kind === 'reference'
+        ? await this.deps.resolveKey(channel.credential.ref)
+        : undefined
     if (key === undefined || key === '') {
       outcome = { ok: false, code: 'MISSING_CREDENTIAL', usage: null }
       yield {
@@ -562,7 +572,7 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
         reason: {
           kind: 'error',
           failure: {
-            message: `no credential is configured for channel "${channel.id}" (reference ${channel.apiKeyEnv})`,
+            message: `channel "${channel.id}" has no key configured`,
             code: 'MISSING_CREDENTIAL',
           },
         },

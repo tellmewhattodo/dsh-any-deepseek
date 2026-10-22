@@ -69,20 +69,6 @@ export function suggestId(presetId: string, existing: ReadonlyArray<{ id: string
   return `${presetId}-${Date.now()}`
 }
 
-/**
- * The credential reference name a preset conventionally uses.
- *
- * This is a CONVENTION, not a lookup: the reference is just the environment-variable name the
- * user's key is stored under, and any name works. Pre-filling the conventional one saves typing;
- * `OPEN_DESIGN` → `OPEN_DESIGN_API_KEY`.
- * @param presetId - the chosen preset.
- * @returns the suggested reference name ('' when no preset is chosen).
- */
-export function suggestKeyRef(presetId: string): string {
-  if (presetId === '') return ''
-  return `${presetId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
-}
-
 type SettingsPageProps = PropsRuntime<'settings.section'> & InjectFace<SettingsPageInjected>
 
 /** A status dot: filled when confirmed configured, hollow when confirmed absent, half otherwise. */
@@ -116,16 +102,20 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [adding, setAdding] = useState(false)
   const [newId, setNewId] = useState('')
   const [newPreset, setNewPreset] = useState('')
-  const [newKeyRef, setNewKeyRef] = useState('')
   /**
-   * The reference name the form last derived from a preset.
+   * The key the user typed in the add form.
    *
-   * Needed to tell "the user never touched this field" from "the user typed it": only a value that
-   * still equals the last suggestion may be replaced when the preset changes. Without it,
-   * switching presets after typing a custom reference would silently discard the user's input.
+   * One field, one meaning: the value goes into the channel entry as `apiKey`. There is no
+   * separate "reference name" any more — that pairing (a name the user had to invent, plus a
+   * second store to hold the value) was the design the owner rejected.
    */
-  const lastSuggestedKeyRef = useRef('')
-  /** Same idea for the derived channel id (see the select's onChange). */
+  const [newSecret, setNewSecret] = useState('')
+
+  /** Which channel currently has its inline key field open (null = none). */
+  const [keying, setKeying] = useState<string | null>(null)
+  const [keyDraft, setKeyDraft] = useState('')
+  const [keySaving, setKeySaving] = useState(false)
+  /** The channel id the form last derived from a preset (see the select's onChange). */
   const lastSuggestedId = useRef('')
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -200,27 +190,27 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   /**
    * Create one channel from the form.
    *
-   * Writes only the fields the user actually chose: a preset-backed channel needs nothing but
-   * a key reference, and pre-filling endpoint fields would freeze today's preset values into the
-   * user's document (later preset fixes would never reach them).
+   * ONE write, one store. The key goes into the channel entry as `apiKey`, beside the preset id —
+   * there is no second store to keep in step, so there is no ordering to get wrong and no way for
+   * "channel exists but its key does not" to be a reachable state. Pre-filling endpoint fields is
+   * still avoided: a preset-backed channel records the preset, so later preset fixes reach it.
    */
   const addChannel = (): void => {
     const id = newId.trim()
-    if (newPreset === '' || id === '' || newIdProblem !== null || newKeyRef.trim() === '') return
-    // One write, one atomic result: the channel entry and the selection are separate documents,
-    // so selecting is a second write — but both are awaited by `write`, and a refusal on either
-    // is surfaced rather than swallowed.
-    write(() => setField(['channels', id], {
-      preset: newPreset,
-      apiKeyEnv: newKeyRef.trim(),
-    }), '添加渠道失败')
+    if (newPreset === '' || id === '' || newIdProblem !== null || newSecret.trim() === '') return
+
+    write(
+      () => setField(['channels', id], { preset: newPreset, apiKey: newSecret.trim() }),
+      '添加渠道失败',
+    )
     // The first channel added to an empty document becomes current: leaving `current` empty
     // means every request fails with NO_CHANNEL_SELECTED, which reads as a broken plugin.
     if (current === '') write(() => setField(['current'], id), '设为当前渠道失败')
+    // The plaintext leaves component state as soon as the host has it: keeping it around would
+    // leave the key sitting in memory (and in React DevTools) for no benefit.
+    setNewSecret('')
     setNewId('')
-    setNewKeyRef('')
     setNewPreset('')
-    lastSuggestedKeyRef.current = ''
     lastSuggestedId.current = ''
     setAdding(false)
   }
@@ -228,6 +218,39 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const removeChannel = (id: string): void => {
     write(() => removeField(['channels', id]), '移除渠道失败')
     if (current === id) write(() => removeField(['current']), '清除当前选择失败')
+  }
+
+  /**
+   * Store one channel's key from the inline field.
+   *
+   * The "I have the key / mine changed" path. It is a plain settings write to
+   * `channels.<id>.apiKey`, which means it inherits everything the rest of the panel already
+   * relies on: a real path (not a dotted string), a visible refusal, and the host's own
+   * validation. Nothing is consulted, resolved or named.
+   *
+   * A legacy entry whose key lives in `apiKeyEnv` is handled by the runtime, not here: that field
+   * is read as a literal key when it cannot be a reference name, so the user's first typed key
+   * simply supersedes it.
+   * @param row - the channel whose key is being set.
+   */
+  const saveKey = async (row: ChannelRow): Promise<void> => {
+    setKeySaving(true)
+    try {
+      const accepted = await setField(['channels', row.id, 'apiKey'], keyDraft.trim())
+      if (!accepted) {
+        setError('保存密钥失败：宿主拒绝了这个修改')
+        return
+      }
+      setError(null)
+      setKeyDraft('')
+      setKeying(null)
+      // Re-read so the dot and the "configured" line reflect what is stored, not our hope.
+      await refresh()
+    } catch (cause: unknown) {
+      setError(`保存密钥失败：${cause instanceof Error ? cause.message : String(cause)}`)
+    } finally {
+      setKeySaving(false)
+    }
   }
 
   return (
@@ -295,6 +318,63 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                           : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
                       </span>
                     )}
+                    {/*
+                      Key state is shown as a fact, with the fix one step away: an unconfigured
+                      channel offers the input inline rather than sending the user off to another
+                      screen. `keyConfigured` is the host's own answer (it never returns the value).
+
+                      🔴 `keyRefValid === false` is a DIFFERENT state from "no key yet": the entry
+                      has something that is not a credential name in the name field (in practice
+                      a key pasted into it). Calling that "未配置" would be true but useless — the
+                      user's next action is not "add a key", it is "fix the slot", which the panel
+                      now does for them when they save one.
+                    */}
+                    {row.keyConfigured ? (
+                      <span className="ad-keyLine">
+                        <span className="ad-keyOn">密钥已配置</span>
+                        {row.keyKind === 'reference' && (
+                          <code className="ad-mono ad-keyName">{row.keyRef}</code>
+                        )}
+                        <button
+                          type="button"
+                          className="ad-link"
+                          onClick={() => setKeying(keying === row.id ? null : row.id)}
+                        >
+                          {keying === row.id ? '取消' : '更换'}
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="ad-keyLine">
+                        <span className="ad-keyOff">未配置密钥</span>
+                        <button
+                          type="button"
+                          className="ad-link"
+                          onClick={() => setKeying(keying === row.id ? null : row.id)}
+                        >
+                          {keying === row.id ? '取消' : '填写密钥'}
+                        </button>
+                      </span>
+                    )}
+                    {keying === row.id && (
+                      <span className="ad-keyForm">
+                        <input
+                          className="ad-input"
+                          type="password"
+                          autoComplete="off"
+                          value={keyDraft}
+                          placeholder="粘贴 key 本体"
+                          onChange={(event) => setKeyDraft(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="ad-btn"
+                          disabled={keyDraft.trim() === '' || keySaving}
+                          onClick={() => { void saveKey(row) }}
+                        >
+                          {keySaving ? '保存中…' : '保存密钥'}
+                        </button>
+                      </span>
+                    )}
                   </span>
                 </label>
                 <div className="ad-rowActions">
@@ -321,10 +401,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         </ul>
 
         {/*
-          Adding is a form, not a JSON editor — but it should not ask for facts the plugin can
-          derive. Choosing a preset already determines the endpoint AND the credential reference
-          name, so the form asks for the one thing only the user knows (which preset), then
-          pre-fills the rest and lets them correct it.
+          Adding is a form, not a JSON editor — and it asks only for what only the user knows.
+          Choosing a preset determines the endpoint; the id is derived from it. The key is the one
+          thing the panel cannot know, so it is the one thing the form asks for.
         */}
         {adding ? (
           <div className="ad-addForm">
@@ -336,25 +415,21 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 onChange={(event) => {
                   const next = event.target.value
                   setNewPreset(next)
-                  // Derive the two fields the preset already answers — but only replace a value
-                  // that is EMPTY or was itself derived by a previous preset choice. A value the
-                  // user typed is theirs: switching presets must not silently discard it.
+                  // Derive the channel id — but only replace a value that is EMPTY or was itself
+                  // derived by a previous preset choice. A value the user typed is theirs:
+                  // switching presets must not silently discard it.
                   //
-                  // 🔴 Read the previous suggestions into LOCALS before scheduling the updates.
-                  // A React state updater runs LATER, so `previous === lastSuggestedId.current`
-                  // inside one compared against the value this handler had already overwritten —
-                  // the test could never succeed and a derived id was never refreshed. Measured
-                  // in the real browser: Open Design then Ollama kept id "open-design" while the
-                  // select showed Ollama. (An earlier version of this branch also read
-                  // `previous === '' || previous === ''` — the same test twice.)
+                  // 🔴 Read the previous suggestion into a LOCAL before scheduling the update. A
+                  // React state updater runs LATER, so comparing against `lastSuggestedId.current`
+                  // inside one compares with the value this handler already overwrote — the test
+                  // could never succeed and a derived id was never refreshed. Measured in the real
+                  // browser: Open Design then Ollama kept id "open-design" while the select showed
+                  // Ollama. (An earlier version also read `previous === '' || previous === ''` —
+                  // the same test twice.)
                   const previousId = lastSuggestedId.current
-                  const previousKey = lastSuggestedKeyRef.current
                   const nextId = suggestId(next, rows)
-                  const nextKey = suggestKeyRef(next)
                   setNewId((current) => (current === '' || current === previousId) ? nextId : current)
-                  setNewKeyRef((current) => (current === '' || current === previousKey) ? nextKey : current)
                   lastSuggestedId.current = nextId
-                  lastSuggestedKeyRef.current = nextKey
                 }}
               >
                 <option value="">选择规格…</option>
@@ -373,23 +448,34 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               />
             </label>
             {newIdProblem !== null && <p className="ad-fieldError">{newIdProblem}</p>}
+            {/*
+              🔴 The key, and nothing but the key.
+
+              This field used to ask for a "credential reference name" and tell the user to set
+              the secret "in the credential centre" — a place that does not exist in this UI, so
+              the value the user actually held had nowhere to go. It now takes the key itself and
+              stores it on the channel; there is no name to invent and no second store to visit.
+            */}
             <label className="ad-field">
-              <span>凭据引用名</span>
+              <span>密钥</span>
               <input
                 className="ad-input"
-                value={newKeyRef}
-                placeholder={newPreset === '' ? '例如 OPENCODE_GO_API_KEY' : suggestKeyRef(newPreset)}
-                onChange={(event) => setNewKeyRef(event.target.value)}
+                type="password"
+                autoComplete="off"
+                value={newSecret}
+                placeholder={newPreset === '' ? '先选上面的规格' : 'sk-…'}
+                onChange={(event) => setNewSecret(event.target.value)}
               />
             </label>
             <p className="ad-hint">
-              这里填的是<strong>引用名</strong>（环境变量名），不是密钥本身。密钥请通过凭据中心设置。
+              密钥写在本机 profile 配置里（<code className="ad-mono">channels.&lt;id&gt;.apiKey</code>）。
+              它<strong>不</strong>外传，但会因为配置文件而被看到——别把这个 profile 分享出去。
             </p>
             <div className="ad-rowActions">
               <button
                 type="button"
                 className="ad-btn"
-                disabled={newPreset === '' || newId.trim() === '' || newIdProblem !== null || newKeyRef.trim() === ''}
+                disabled={newPreset === '' || newId.trim() === '' || newIdProblem !== null || newSecret.trim() === ''}
                 onClick={addChannel}
               >
                 添加
@@ -400,7 +486,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <button type="button" className="ad-btn" onClick={() => { setAdding(true); lastSuggestedId.current = ''; lastSuggestedKeyRef.current = '' }}>
+          <button type="button" className="ad-btn" onClick={() => { setAdding(true); lastSuggestedId.current = '' }}>
             添加渠道
           </button>
         )}

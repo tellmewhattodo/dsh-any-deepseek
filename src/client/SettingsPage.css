@@ -379,6 +379,71 @@ select.ad-input option {
   color: #c53030;
 }
 
+/* ── key row ──────────────────────────────────────────────────────────────── */
+
+/*
+ * The key line states a FACT and offers the fix beside it: "configured / not configured",
+ * the reference name the secret is filed under, and one text button that opens the input.
+ *
+ * The value is never shown — the harness credential seam answers "configured?" and refuses to
+ * answer anything else, so there is nothing to render even if we wanted to.
+ */
+.ad-keyLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.ad-keyOn {
+  color: #2f855a;
+}
+
+.ad-keyOff {
+  color: #b7791f;
+}
+
+/* The reference name, not a secret: monospace so it lines up and misreads as a name, not a value. */
+.ad-keyName {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--ad-fill-subtle);
+  opacity: 0.8;
+}
+
+/* A text-shaped action. Styled as a link because it opens an inline editor, not a dialog. */
+.ad-link {
+  font-size: 11px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.ad-link:hover {
+  opacity: 1;
+}
+
+/* The inline key editor: one masked field and one button, on the same line as the fact above. */
+.ad-keyForm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.ad-keyForm .ad-input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* A destructive action is quiet until hovered: it should be findable, not inviting. */
 .ad-btn-danger {
   opacity: 0.6;

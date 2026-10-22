@@ -50,11 +50,9 @@ dsh-any-deepseek:
   current: opencode-go          # the live channel (manual)
   channels:
     opencode-go:
-      apiKeyEnv: ANY_DEEPSEEK_OPENCODE_GO_KEY
-      enabled: true
+      apiKey: sk-…              # the key itself
     commandcode:
-      apiKeyEnv: ANY_DEEPSEEK_COMMANDCODE_KEY
-      enabled: true
+      apiKey: sk-…              # the key itself
   usage:
     enabled: true
 ```
@@ -65,6 +63,24 @@ dsh-any-deepseek:
 - **fully declared** — `baseURL` + `model` are required; `api` defaults to
   `openai-completions`, and `contextWindow` / `maxTokens` fall back to documented defaults
   (the panel shows a warning next to the row when a default was applied rather than declared).
+
+### Where the key lives
+
+`apiKey` holds the key **itself**, on the channel. The panel never asks you to invent a name for
+it — you paste the key, and it is written here.
+
+⚠️ **That means the key is in your profile configuration.** `dsh --dump-config` prints patch
+layers verbatim and does not redact, so a diagnostic dump, a `git diff` of the profile, or a
+pasted config includes it. Do not share the profile document. Environment-variable injection
+(`-e SOME_KEY=…`) is not consulted — nothing resolves a name.
+
+`apiKeyEnv` is still **read** for configurations written before this change: when its value
+matches the credential-reference grammar (`^[A-Za-z_][A-Za-z0-9_]*$`) it is resolved as a name;
+when it does not, it cannot be a name, so it is adopted as the key itself. `apiKey` always wins
+when both are present, so re-keying through the panel is enough to migrate an entry.
+
+A channel with no key still **appears** in the panel — that is how you find and fix it. Requests
+through it fail with `MISSING_CREDENTIAL`, and the row shows an unconfigured dot.
 
 ### Channels vs. protocols
 

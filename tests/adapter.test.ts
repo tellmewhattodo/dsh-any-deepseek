@@ -21,7 +21,7 @@ function channel(overrides: Partial<ResolvedChannel> = {}): ResolvedChannel {
     api: 'openai-completions',
     baseURL: 'https://relay.example/v1',
     model: 'deepseek-v4.1-flash',
-    apiKeyEnv: 'GO_KEY',
+    credential: { kind: 'literal', value: 'sk-secret-value' },
     contextWindow: 1_000_000,
     maxTokens: 384_000,
     input: ['text'],

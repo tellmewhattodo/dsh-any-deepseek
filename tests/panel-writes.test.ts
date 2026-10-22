@@ -105,12 +105,16 @@ describe('settings writes use real paths', () => {
 })
 
 describe('add-channel form', () => {
-  it('creates a channel with a preset and a credential REFERENCE only', () => {
+  it('creates a channel with a preset and the key itself', () => {
     const page = pageSource()
     // Pre-filling endpoint fields would freeze today's preset values into the user's document,
-    // so later preset fixes would never reach them.
+    // so later preset fixes would never reach them. The key, by contrast, is exactly what the
+    // user has and the panel cannot derive — so it goes straight into the entry.
     expect(page).toContain("setField(['channels', id], {")
-    expect(page).toContain('apiKeyEnv: newKeyRef.trim()')
+    expect(page).toContain('apiKey: newSecret.trim()')
+    // No invented reference name may reappear: that was the design the owner rejected.
+    expect(page).not.toContain('suggestKeyRef')
+    expect(page).not.toContain('apiKeyEnv:')
   })
 
   it('makes the first added channel current', () => {
@@ -136,9 +140,8 @@ describe('add-channel form', () => {
 })
 
 describe('the add form derives what the preset already answers', () => {
-  // A preset fully determines the endpoint and conventionally determines the credential reference
-  // name. Asking the user to retype them is the friction the owner reported; deriving them is the
-  // fix, and the derivation is pure so it can be pinned here.
+  // A preset fully determines the endpoint, so asking the user to retype it is the friction the
+  // owner reported. The derivation is pure, so it is pinned here.
   it('suggests the preset id as the channel id when it is free', () => {
     expect(suggestId('open-design', [])).toBe('open-design')
   })
@@ -151,29 +154,20 @@ describe('the add form derives what the preset already answers', () => {
 
   it('suggests nothing when no preset is chosen', () => {
     expect(suggestId('', [])).toBe('')
-    expect(suggestKeyRef('')).toBe('')
   })
 
-  it('derives an UPPER_SNAKE reference name from the preset id', () => {
-    expect(suggestKeyRef('open-design')).toBe('OPEN_DESIGN_API_KEY')
-    expect(suggestKeyRef('opencode-go')).toBe('OPENCODE_GO_API_KEY')
-    expect(suggestKeyRef('deepseek-official')).toBe('DEEPSEEK_OFFICIAL_API_KEY')
-  })
-
-  it('🔴 each derived field compares against the PREVIOUS suggestion, captured as a local', () => {
-    // Two distinct bugs live here, both invisible to a pure-function test:
+  it('🔴 the derived id compares against the PREVIOUS suggestion, captured as a local', () => {
+    // Two distinct bugs lived here, both invisible to a pure-function test:
     //  ① the branch once read `previous === '' || previous === ''` — the same test twice;
-    //  ② even with both refs named, reading them INSIDE the updater compares against the value
-    //     the handler already overwrote, because a React state updater runs later.
+    //  ② even with the ref named, reading it INSIDE the updater compares against the value the
+    //     handler already overwrote, because a React state updater runs later.
     // Measured in the real browser both times: Open Design → Ollama kept id "open-design"
     // while the select showed Ollama.
     const page = pageSource()
-    // The handler captures both suggestions before scheduling any update…
+    // The handler captures the previous suggestion before scheduling any update…
     expect(page).toContain('const previousId = lastSuggestedId.current')
-    expect(page).toContain('const previousKey = lastSuggestedKeyRef.current')
-    // …and the updaters compare against those locals, never against a live ref.
+    // …and the updater compares against that local, never against a live ref.
     expect(page).toContain('current === previousId')
-    expect(page).toContain('current === previousKey')
     // Check only EXECUTABLE lines: comments quote the broken forms, and a substring test over
     // the whole file cannot tell a comment from code.
     const code = page
@@ -182,9 +176,73 @@ describe('the add form derives what the preset already answers', () => {
       .join('\n')
     expect(code).not.toMatch(/previous === '' \|\| previous === ''/)
     // The updater body must not read a ref: that is bug ②.
-    for (const updater of code.match(/set(?:NewId|NewKeyRef)\(\(current\) => [^\n]*/g) ?? []) {
+    for (const updater of code.match(/setNewId\(\(current\) => [^\n]*/g) ?? []) {
       expect(updater).not.toContain('.current')
     }
+  })
+})
+
+describe('the panel takes the KEY and stores it on the channel', () => {
+  // 🔴 The design this pins out of existence: the panel used to ask for a "credential reference
+  // name" and tell the user to set the secret "in the credential centre" — a place that does not
+  // exist in this UI, so the key the user actually held had nowhere to go. Owner decision
+  // 2026-10-21: store the key in the channel entry. One field, one store, one write.
+
+  it('writes the key into the channel entry, not into a second store', () => {
+    const source = clientSource()
+    // Strip comments first: this file's own header explains WHY the credential namespace was
+    // dropped, and a raw substring test cannot tell that explanation from a call.
+    const code = source
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+      .join('\n')
+    // The credential namespace must be gone from the client half's executable code.
+    expect(code).not.toContain('remote.credentials')
+    expect(code).not.toContain('storeCredential')
+    // And the only write shape is the settings mutate the rest of the panel already uses.
+    expect(code).toContain('form.mutate(')
+  })
+
+  it('asks for the key itself, in a masked field', () => {
+    const page = pageSource()
+    expect(page).toContain('<span>密钥</span>')
+    expect(page).toContain('type="password"')
+    // The old wording must not come back: one named a place that does not exist, the other asked
+    // the user to invent an identifier for something they only have a value for.
+    expect(page).not.toContain('凭据中心')
+    expect(page).not.toContain('凭据引用名')
+    expect(page).not.toContain('引用名')
+  })
+
+  it('re-keys an existing channel with a single settings write', () => {
+    const page = pageSource()
+    // The "I have the key / mine changed" path: one write to channels.<id>.apiKey, through the
+    // same `write()` wrapper as every other mutation so a refusal is visible.
+    const saveKey = page.slice(page.indexOf('const saveKey = async (row: ChannelRow)'))
+    const body = saveKey.slice(0, saveKey.indexOf('\n  }\n'))
+    expect(body).toContain("await setField(['channels', row.id, 'apiKey'], keyDraft.trim())")
+    expect(body).toContain('宿主拒绝了这个修改')
+    // Re-read afterwards: the dot must reflect what is stored, not our hope.
+    expect(body).toContain('await refresh()')
+  })
+
+  it('tells the user where the key ends up', () => {
+    const page = pageSource()
+    // Since the key now lives in the profile document, the panel must not imply it is hidden
+    // somewhere else — the accepted cost is stated at the point of entry, not in a changelog.
+    expect(page).toContain('channels.&lt;id&gt;.apiKey')
+    expect(page).not.toContain('不会</strong>写进 profile 配置文件')
+  })
+
+  it('every channel row says where its key lives', () => {
+    // Without `keyKind` the panel cannot tell a key it may rewrite from a reference name whose
+    // value it can never read — so it would offer an edit box that cannot work for one of them.
+    const api = readFileSync(join(process.cwd(), 'src', 'client', 'panel-api.ts'), 'utf-8')
+    const row = api.slice(api.indexOf('export interface ChannelRow'))
+    const body = row.slice(0, row.indexOf('\n}'))
+    expect(body).toMatch(/keyKind:\s*'literal' \| 'reference' \| 'none'/)
+    // `keyRef` survives only for the reference case, and is therefore optional.
+    expect(body).toMatch(/keyRef\?:\s*string/)
   })
 })
 

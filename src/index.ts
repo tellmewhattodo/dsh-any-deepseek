@@ -121,7 +121,11 @@ function makeRecorder(ctx: unknown, config: PluginConfigValue): (entry: LedgerEn
 export function apply(ctx: Context, config: PluginConfigValue): void {
   const credentials = () => service<CredentialsLike>(ctx, 'credentials')
 
-  /** Resolve a credential reference, distinguishing "absent" from "not configured". */
+  /**
+   * Resolve a credential REFERENCE, distinguishing "absent" from "not configured".
+   *
+   * Only legacy channels reach this: a channel that stores its own key never asks the seam.
+   */
   const resolveKey = async (ref: string): Promise<string | undefined> => {
     const seam = credentials()
     if (seam?.resolve === undefined) {

@@ -41,7 +41,7 @@ function channel(overrides: Partial<ResolvedChannel> = {}): ResolvedChannel {
     api: 'openai-completions',
     baseURL: 'https://relay.example/v1',
     model: 'deepseek-v4.1-flash',
-    apiKeyEnv: 'GO_KEY',
+    credential: { kind: 'literal', value: 'sk-secret-value' },
     contextWindow: 1_000_000,
     maxTokens: 384_000,
     input: ['text'],
@@ -166,10 +166,34 @@ describe('GET /channels', () => {
   })
 
   it('marks an unconfigured key as absent rather than failing the route', async () => {
-    const { call } = mount({ describeKey: async () => ({ configured: false }) })
+    const { call } = mount({ channels: () => [channel({ credential: { kind: 'none' } })] })
     const response = await call(`${ROUTE_PREFIX}/channels`)
     expect(response.status).toBe(200)
     expect((response.body as { channels: Array<{ keyConfigured: boolean }> }).channels[0]?.keyConfigured).toBe(false)
+  })
+
+  it('reports WHERE the key lives, so the panel knows if it can rewrite it', async () => {
+    // `literal` — the panel may overwrite it in place.
+    // `reference` — a name; the panel cannot read the value, and must not pretend it can.
+    const literal = await mount().call(`${ROUTE_PREFIX}/channels`)
+    expect((literal.body as { channels: Array<Record<string, unknown>> }).channels[0])
+      .toMatchObject({ keyKind: 'literal', keyConfigured: true })
+
+    const reference = await mount({
+      channels: () => [channel({ credential: { kind: 'reference', ref: 'GO_KEY' } })],
+      describeKey: async () => ({ configured: true, source: 'store' }),
+    }).call(`${ROUTE_PREFIX}/channels`)
+    expect((reference.body as { channels: Array<Record<string, unknown>> }).channels[0])
+      .toMatchObject({ keyKind: 'reference', keyRef: 'GO_KEY', keyConfigured: true })
+  })
+
+  it('🔴 answers a literal key WITHOUT consulting the credential seam', async () => {
+    // A channel that stores its own key must not depend on the harness credential service being
+    // composed — that dependency is exactly what the store-the-key-on-the-channel change removed.
+    const describeKey = vi.fn(async () => ({ configured: false }))
+    const { call } = mount({ describeKey })
+    await call(`${ROUTE_PREFIX}/channels`)
+    expect(describeKey).not.toHaveBeenCalled()
   })
 
   it('sets no-store so a stale key state is never served from cache', async () => {
@@ -239,16 +263,33 @@ describe('POST /probe', () => {
   })
 
   it('reports MISSING_CREDENTIAL instead of sending an unauthenticated request', async () => {
-    const { call } = mount({ resolveKey: async () => undefined })
+    const { call } = mount({ channels: () => [channel({ credential: { kind: 'none' } })] })
     const response = await call(`${ROUTE_PREFIX}/probe`, { method: 'POST', body: { id: 'go' } })
     expect(response.status).toBe(409)
     expect((response.body as { code: string }).code).toBe('MISSING_CREDENTIAL')
   })
 
+  it('resolves a legacy reference exactly as the request path would', async () => {
+    // A probe that read the key differently from the adapter would certify a channel the plugin
+    // cannot actually use. Reference channels therefore go through `resolveKey` here too.
+    const resolveKey = vi.fn(async () => 'sk-from-store')
+    const { call } = mount({
+      channels: () => [channel({ credential: { kind: 'reference', ref: 'GO_KEY' } })],
+      resolveKey,
+    })
+    // The probe will fail to reach the network, which is fine — what matters is that it tried
+    // with a resolved key rather than short-circuiting to 409.
+    await call(`${ROUTE_PREFIX}/probe`, { method: 'POST', body: { id: 'go' } })
+    expect(resolveKey).toHaveBeenCalledWith('GO_KEY')
+  })
+
   it('never probes implicitly — only when an id is posted', async () => {
     // A probe spends real tokens. GETs on the other routes must not trigger one.
     const resolveKey = vi.fn(async () => 'sk-secret-value')
-    const { call } = mount({ resolveKey })
+    const { call } = mount({
+      channels: () => [channel({ credential: { kind: 'reference', ref: 'GO_KEY' } })],
+      resolveKey,
+    })
     await call(`${ROUTE_PREFIX}/channels`)
     await call(`${ROUTE_PREFIX}/stats`)
     expect(resolveKey).not.toHaveBeenCalled()

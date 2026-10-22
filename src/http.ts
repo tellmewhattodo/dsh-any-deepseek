@@ -35,7 +35,7 @@ export const ROUTE_PREFIX = '/any-deepseek'
 export interface RouteDeps {
   /** Every resolved channel, in configuration order. */
   channels: () => readonly ResolvedChannel[]
-  /** Resolve a credential reference to its value. */
+  /** Resolve a credential REFERENCE to its value (legacy entries only). */
   resolveKey: (ref: string) => Promise<string | undefined>
   /** Preset ids and labels for the "add channel" picker. */
   listPresets: () => Array<{ id: string; displayName: string }>
@@ -195,7 +195,17 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
       path: `${ROUTE_PREFIX}/channels`,
       handler: async (_req, res) => {
         const rows = await Promise.all(deps.channels().map(async (channel) => {
-          const key = await deps.describeKey(channel.apiKeyEnv)
+          /**
+           * 🔴 The key is a property of the CHANNEL now, so "is one configured?" is answered
+           * without consulting any credential store. A legacy reference still asks the harness,
+           * and that answer is the only thing the panel ever learns about a reference: whether
+           * it exists.
+           */
+          const key = channel.credential.kind === 'literal'
+            ? { configured: channel.credential.value !== '', source: 'channel' }
+            : channel.credential.kind === 'reference'
+              ? await deps.describeKey(channel.credential.ref)
+              : { configured: false, source: undefined }
           return {
             id: channel.id,
             label: channel.label,
@@ -208,6 +218,10 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
             warnings: [...channel.warnings],
             keyConfigured: key.configured,
             ...key.source === undefined ? {} : { keySource: key.source },
+            // WHERE the key lives, never what it is. `literal` = the panel can rewrite it in
+            // place; `reference` = a name to resolve, whose value the panel cannot read.
+            keyKind: channel.credential.kind,
+            ...channel.credential.kind === 'reference' ? { keyRef: channel.credential.ref } : {},
           }
         }))
         json(res, 200, { channels: rows, presets: deps.listPresets(), model: deps.advertised() })
@@ -263,12 +277,20 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
         }
         const channel = deps.channels().find((candidate) => candidate.id === id)
         if (channel === undefined) {
-          json(res, 404, { error: `no enabled channel named "${id}"` })
+          json(res, 404, { error: `no channel named "${id}"` })
           return
         }
-        const key = await deps.resolveKey(channel.apiKeyEnv)
+        // Same key order as the runtime path: a literal key never consults the credential seam,
+        // and a legacy reference is resolved exactly as a real request would resolve it. A probe
+        // that read the key differently from the request path would certify a channel the
+        // adapter cannot actually use.
+        const key = channel.credential.kind === 'literal'
+          ? channel.credential.value
+          : channel.credential.kind === 'reference'
+            ? await deps.resolveKey(channel.credential.ref)
+            : undefined
         if (key === undefined || key === '') {
-          json(res, 409, { error: `channel "${id}" has no configured credential`, code: 'MISSING_CREDENTIAL' })
+          json(res, 409, { error: `channel "${id}" has no key configured`, code: 'MISSING_CREDENTIAL' })
           return
         }
         const verdict = await probeChannel(channel, key)

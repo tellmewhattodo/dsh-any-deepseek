@@ -122,7 +122,7 @@ function config(overrides: Partial<PluginConfigValue> = {}): PluginConfigValue {
         label: 'OpenCode Go',
         model: 'deepseek-v4.1-flash',
         baseURL: 'https://relay.example/v1',
-        apiKeyEnv: 'GO_KEY',
+        apiKey: 'sk-live-value',
       },
     },
     current: 'go',
@@ -229,20 +229,25 @@ describe('credential seam', () => {
     expect(spy.credentialRefs).toHaveLength(0)
   })
 
-  it('consults the seam by reference (never by value) when a request needs the key', async () => {
+  it('🔴 a channel that stores its own key never consults the credential seam', async () => {
+    // The whole point of storing the key on the channel: no dependency on the harness credential
+    // service being composed. A deployment with no credentials provider must still work.
     const { ctx, spy } = fakeContext({ keyValue: 'sk-from-seam' })
-    // 🔴 `usage.enabled: false` is not cosmetic here: driving `stream()` makes the adapter
-    // record a ledger entry, and the default ledger directory is the REAL `~/.dsh/any-deepseek`.
-    // Without this, running the suite appends junk rows to the user's actual usage book — which
-    // then breaks the `/stats` tests in `http.test.ts` (measured: they expect an empty ledger).
     apply(ctx, config({ usage: { enabled: false } }))
-
-    // The catalog no longer reads credentials (it must stay visible without a key), so the
-    // seam is exercised through the path that genuinely needs a key: one request.
     const adapter = spy.adapters[0]?.adapter as { stream: (o: unknown) => AsyncIterable<unknown> }
     for await (const chunk of adapter.stream(request())) void chunk
+    expect(spy.credentialRefs).toEqual([])
+  })
 
-    // The reference is the channel's apiKeyEnv; the value never enters the argument.
+  it('still resolves a legacy reference name through the seam', async () => {
+    const { ctx, spy } = fakeContext({ keyValue: 'sk-from-seam' })
+    apply(ctx, config({
+      channels: { go: { apiKeyEnv: 'GO_KEY', model: 'm', baseURL: 'https://x/v1' } },
+      usage: { enabled: false },
+    } as never))
+    const adapter = spy.adapters[0]?.adapter as { stream: (o: unknown) => AsyncIterable<unknown> }
+    for await (const chunk of adapter.stream(request())) void chunk
+    // A grammar-valid name is a reference, and resolutions go through the seam by NAME.
     expect(spy.credentialRefs).toEqual(['GO_KEY'])
   })
 

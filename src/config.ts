@@ -45,6 +45,9 @@ export interface ChannelConfigInput {
   api?: string
   baseURL?: string
   model?: string
+  /** The key itself, stored in the channel entry. The panel writes this. */
+  apiKey?: string
+  /** Legacy: a credential reference name, resolved through the harness seam / environment. */
   apiKeyEnv?: string
   contextWindow?: number
   maxTokens?: number
@@ -66,6 +69,7 @@ export interface ChannelConfigValue {
   readonly api?: string
   readonly baseURL?: string
   readonly model?: string
+  readonly apiKey?: string
   readonly apiKeyEnv?: string
   readonly contextWindow?: number
   readonly maxTokens?: number
@@ -79,9 +83,26 @@ export interface ChannelConfigValue {
  * One channel entry schema.
  *
  * Fields split into two groups the panel treats differently:
- *  - the key group (`apiKeyEnv`) — the only thing a user must supply for a preset channel;
+ *  - the key group (`apiKey`) — the only thing a user must supply for a preset channel;
  *  - the endpoint group (`api` / `baseURL` / `model` / capacities) — filled from a preset, or
  *    declared by hand for a custom channel.
+ *
+ * ## Why the key is stored here and not behind a reference
+ *
+ * This plugin used to take a credential REFERENCE NAME and store the value through
+ * `ctx.remote.credentials`. Owner decision 2026-10-21: store the key in the entry itself.
+ *
+ * The price is explicit and accepted, recorded here so nobody rediscovers it as a bug:
+ *  · `dsh --dump-config` renders patch layers verbatim and does NOT redact — a key in the
+ *    configuration tree prints in full in diagnostics and diffs;
+ *  · the environment-injection path (`-e SOME_KEY=…`) no longer reaches this plugin, because
+ *    nothing resolves a name any more; a container run must carry the value in the profile.
+ * What it buys: one storage location, no invented naming layer, and a panel that asks only for
+ * the thing the user actually has.
+ *
+ * `role('secret')` is still declared. It does nothing for `dump-config` (measured: that path has
+ * no redaction hook), but it makes the REMOTE settings read strip the field, so the browser form
+ * never receives a value it did not type.
  */
 export const ChannelConfigSchema: SchemaOf<ChannelConfigInput, ChannelConfigValue> = z.object({
   /** Label shown in the panel; falls back to the preset's display name, then the id. */
@@ -91,7 +112,8 @@ export const ChannelConfigSchema: SchemaOf<ChannelConfigInput, ChannelConfigValu
   api: z.string().description('接口协议：openai-completions（默认）/ openai-responses / anthropic-messages'),
   baseURL: z.string().description('端点根地址'),
   model: z.string().description('上游模型 id（各家拼写不同，必填）'),
-  apiKeyEnv: z.string().description('凭据引用名（环境变量名）；真实 key 存在凭据库里，不落配置'),
+  apiKey: z.string().role('secret').description('密钥本体（面板里粘贴，写在这条渠道上）'),
+  apiKeyEnv: z.string().description('旧式：凭据引用名（环境变量名）。仅当 apiKey 为空时才用'),
   contextWindow: z.number().description('上下文窗口（tokens）'),
   maxTokens: z.number().description('单次输出上限（tokens）'),
   input: z.array(z.union([z.const('text'), z.const('image')])).description('输入模态'),

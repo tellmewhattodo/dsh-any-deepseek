@@ -19,6 +19,16 @@ export interface ChannelRow {
   warnings: string[]
   keyConfigured: boolean
   keySource?: string
+  /**
+   * Where this channel's key lives.
+   *
+   * `literal` — stored in the channel entry; the panel can read and rewrite it.
+   * `reference` — a name resolved by the harness; the panel can only learn whether it exists.
+   * `none` — nothing configured yet.
+   */
+  keyKind: 'literal' | 'reference' | 'none'
+  /** The reference name, present only when {@link keyKind} is `reference`. */
+  keyRef?: string
 }
 
 /** `/any-deepseek/channels` response. */

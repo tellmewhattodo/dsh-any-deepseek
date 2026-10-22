@@ -4,13 +4,17 @@
  * Registers one settings page under the `settings.section` slot, keyed by this plugin's settings
  * namespace. Data comes from two places, and the split is deliberate:
  *
- *  - **configuration** (channel table, selection) goes through `ctx.configForms`, the harness's
- *    own form surface — it carries schema validation and write-conflict detection, and it is the
- *    same path the official Models page uses;
- *  - **credentials** (whether a key is set) goes through `ctx.remote.credentials.describe`, which
- *    answers "configured?" and never the value;
+ *  - **configuration and keys** (channel table, selection, each channel's key) go through
+ *    `ctx.configForms`, the harness's own form surface — it carries schema validation and
+ *    write-conflict detection, and it is the same path the official Models page uses. A key is a
+ *    field of its channel, so it is written by the same mechanism that writes everything else;
  *  - **usage** comes from this plugin's own `/any-deepseek/stats` route, because the ledger is an
  *    artifact no other part of the harness knows about.
+ *
+ * There is deliberately no dependency on `remote.credentials`. An earlier version stored keys
+ * behind a reference name through that namespace, which required inventing a name the user does
+ * not have and pointed at a "credential centre" that does not exist in this UI. Owner decision
+ * 2026-10-21: the panel takes the key and keeps it on the channel.
  *
  * Registration goes through `configForms.whileServed`, so a deployment that never composed this
  * plugin shows no trace of the page.
@@ -55,6 +59,9 @@ export interface ChannelWire {
   api?: string
   baseURL?: string
   model?: string
+  /** The key itself, written by the panel. */
+  apiKey?: string
+  /** Legacy reference name; only read by the plugin, never produced here. */
   apiKeyEnv?: string
 }
 

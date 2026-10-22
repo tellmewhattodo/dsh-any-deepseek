@@ -10,7 +10,7 @@ function channel(id: string): ResolvedChannel {
     api: 'openai-completions',
     baseURL: 'https://example.invalid/v1',
     model: 'm',
-    apiKeyEnv: `${id.toUpperCase()}_KEY`,
+    credential: { kind: 'literal', value: 'sk-secret-value' },
     contextWindow: 1000,
     maxTokens: 100,
     input: ['text'],
