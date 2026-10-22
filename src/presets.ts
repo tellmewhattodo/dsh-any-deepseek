@@ -35,23 +35,26 @@ export type ChannelModality = 'text' | 'image'
  * How to read one endpoint's remaining balance.
  *
  * Owner request (2026-10-23): 「其它渠道的查看方式你需要找到并实现它们的」. There is no single
- * answer — every provider invented its own surface, and some have none at all. This type is that
- * fact written down instead of guessed: a preset either names a known shape or says it has none.
+ * answer — every provider invented its own surface, and some report windows instead of money.
+ * This type is that fact written down instead of guessed: a preset either names a known shape or
+ * says it has none.
  *
- * Three shapes were verified against real endpoints (see `balance.ts` for the response mapping):
- *  · `deepseek`  — DeepSeek's own `GET /user/balance`.
- *  · `ollama`    — `GET /api/balance` (note: under `/api`, NOT the `/v1` used for inference).
- *  · `openai-billing` — the OpenAI-legacy billing pair that new-api / one-api relays clone:
+ * Four shapes were verified against real endpoints (see `balance.ts` for the response mapping):
+ *  · `deepseek`        — DeepSeek's own `GET /user/balance`.
+ *  · `ollama`          — `GET /api/balance` (note: under `/api`, NOT the `/v1` used for inference).
+ *  · `opencode-windows` — OpenCode Go's `GET /zen/go/v1/usage`: rolling/weekly/monthly WINDOWS.
+ *                         No currency amount — the credit wallet is not API-readable.
+ *  · `openai-billing`  — the OpenAI-legacy billing pair that new-api / one-api relays clone:
  *    `GET /v1/dashboard/billing/subscription` + `GET /v1/dashboard/billing/usage`.
  *
- * 🔴 **A fourth answer is legitimate and must be representable: "this endpoint has no balance
- * API".** OpenCode Zen is exactly that case — its owner has an open feature request asking for
- * one, because today the only key-authenticated signal is the error thrown at $0
- * (anomalyco/opencode#44189). Pretending otherwise would mean showing a number nobody measured.
+ * 🔴 **"This endpoint has no balance API" must be representable, and is**: a preset simply omits
+ * `balance`. Open Design is a measured case (every billing candidate answers 404 while
+ * `/v1/models` answers 401, i.e. inference only). Pretending otherwise would mean showing a
+ * number nobody measured.
  */
 export interface BalanceProbe {
   /** Which response shape to read. */
-  shape: 'deepseek' | 'ollama' | 'openai-billing'
+  shape: 'deepseek' | 'ollama' | 'opencode-windows' | 'openai-billing'
   /**
    * Overrides the base URL for the balance call.
    *
@@ -254,14 +257,26 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     ...V41_FLASH_CAPS,
     compat: { ...DEEPSEEK_THINKING_COMPAT },
     headers: { ...OPENCODE_HEADERS },
-    // 🔴 NO balance probe, and that is a MEASURED fact rather than an omission.
-    // `GET /zen/go/v1/usage` returns Go-subscription usage WINDOWS only; the workspace credit
-    // balance (`BillingTable.balance`, shown on the console billing page) is reachable solely
-    // through an authenticated browser session, not with an API key. The provider has an open
-    // request to expose it (anomalyco/opencode#44189) because today the only key-authenticated
-    // signal is the error thrown at $0. ⇒ Leave absent; do not invent a number.
+    /**
+     * 🔴 **The owner was right that OpenCode has a query surface — and it reports WINDOWS, not
+     * money.** Both halves of that sentence were measured, in that order:
+     *
+     *  1. A route exists at `/zen/go/v1/usage`. Proven by status code discrimination without a
+     *     key: a made-up path under the same prefix answers **404**, while `/usage` answers
+     *     **401** (route present, auth required). `/zen/v1/balance` answers 404 — that one really
+     *     does not exist (it is what anomalyco/opencode#44189 is asking for).
+     *  2. What it returns is Go-subscription usage windows (rolling / weekly / monthly), **not**
+     *     the credit wallet. The balance is only reachable from a logged-in browser session
+     *     (`BillingTable.balance` behind a SolidStart server function), so a key cannot read it —
+     *     the only key-authenticated money signal is the error thrown at $0.
+     *
+     * ⇒ Declared as a `windows` shape, which is exactly what this endpoint honestly provides.
+     * The credit balance stays absent rather than invented; the panel shows the windows and does
+     * not pretend a currency amount exists.
+     */
+    balance: { shape: 'opencode-windows' },
     note: 'Requires the OpenCode session headers; shipped with the preset. '
-      + 'No balance API (subscription usage only).',
+      + 'Usage windows only — the credit balance is not readable with an API key.',
   },
   commandcode: {
     displayName: 'CommandCode',
@@ -291,10 +306,23 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     baseURL: 'https://amr-link.open-design.ai/v1',
     model: 'deepseek-v4.1-flash',
     ...V41_FLASH_CAPS,
-    // Probed live: the new-api/one-api billing pair answers on this relay. The panel still treats
-    // a 404 as "no balance API" rather than an error, so a relay that drops the surface degrades
-    // to an honest "not available" instead of a broken row.
-    balance: { shape: 'openai-billing' },
+    // 🔴 NO balance probe — MEASURED, not assumed.
+    //
+    // Path existence was probed without a key, where the status code is the discriminator:
+    // `/v1/models` answers **401** (route exists, auth required), while every billing candidate
+    // answers **404** (no such route):
+    //   /dashboard/billing/subscription     404
+    //   /v1/dashboard/billing/subscription  404
+    //   /v1/usage                           404
+    //   /v1/credits                         404
+    //   /api/user/self                      404
+    //   /api/status                         404
+    // ⇒ this relay exposes inference only.
+    //
+    // ⚠️ Recorded because the first version of this entry DID declare `openai-billing`, with a
+    // comment claiming it had been "probed live". It had not — the first real call returned 404.
+    // A comment that asserts evidence nobody gathered is worse than no comment: it stops the next
+    // reader from checking. The refutation lives here so the row is not re-added on a hunch.
   },
   'deepseek-official': {
     displayName: 'DeepSeek Official',

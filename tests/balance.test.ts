@@ -23,6 +23,7 @@ import {
   balanceUrls,
   parseDeepSeekBalance,
   parseOllamaBalance,
+  parseOpencodeWindows,
   parseOpenAIBilling,
   probeUrlsFor,
   readBalance,
@@ -182,6 +183,61 @@ describe('parseOpenAIBilling', () => {
   })
 })
 
+describe('parseOpencodeWindows — windows, never money', () => {
+  /**
+   * 🔴 The owner's memory was right and my first draft was wrong: OpenCode DOES expose a usage
+   * query. What it does not expose (to an API key) is the credit wallet.
+   *
+   * Proof the route exists, obtained WITHOUT a key by discriminating on status code:
+   *   /zen/go/v1/usage                    → 401  (route present, auth required)
+   *   /zen/go/v1/totally-made-up-path-xyz → 404  (no such route)
+   *   /zen/v1/balance                     → 404  (the endpoint #44189 is still asking for)
+   * A blanket "401 means nothing is there" reading would have been wrong here.
+   */
+
+  it('🔴 inverts `percent`, which the API reports as USED', () => {
+    // Passing it through unchanged would tell a user who has used 12% that 12% REMAINS — off by
+    // 88 points, and wrong in the alarming direction.
+    const reading = parseOpencodeWindows({
+      usage: {
+        rolling: { status: 'ok', percent: 12, resetsAt: '2026-10-23T05:00:00Z' },
+        weekly: { status: 'ok', percent: 34 },
+        monthly: { status: 'ok', percent: 56 },
+      },
+    })
+    expect(reading?.windows.map((w) => [w.name, w.remainingPercent])).toEqual([
+      ['rolling', 88],
+      ['weekly', 66],
+      ['monthly', 44],
+    ])
+    expect(reading?.windows[0]?.resetsAt).toBe('2026-10-23T05:00:00Z')
+  })
+
+  it('reports NO currency amount, and says why', () => {
+    const reading = parseOpencodeWindows({ usage: { weekly: { percent: 10 } } })
+    expect(reading?.amounts).toEqual([])
+    expect(reading?.note).toContain('not readable with an API key')
+  })
+
+  it('🔴 picks up a balance object the day they ship it — no code change here', () => {
+    // #44189 asks for exactly this object. When it lands, the number appears by itself.
+    const reading = parseOpencodeWindows({
+      usage: { weekly: { percent: 10 } },
+      balance: { usd: 4.1, currency: 'USD', asOf: '2026-08-22T17:00:00Z' },
+    })
+    expect(reading?.amounts).toEqual([{ currency: 'USD', remaining: 4.1 }])
+  })
+
+  it('accepts the keys hoisted to the top level', () => {
+    const reading = parseOpencodeWindows({ rolling: { percent: 5 } })
+    expect(reading?.windows[0]).toMatchObject({ name: 'rolling', remainingPercent: 95 })
+  })
+
+  it('returns undefined when nothing recognizable is present', () => {
+    expect(parseOpencodeWindows({ error: 'nope' })).toBeUndefined()
+  })
+})
+
 describe('readBalance — dispatch', () => {
   it('routes each shape to its own parser', () => {
     expect(readBalance({ shape: 'deepseek' }, [{ balance_infos: [{ currency: 'CNY', total_balance: '1' }] }]))
@@ -190,5 +246,7 @@ describe('readBalance — dispatch', () => {
       .toMatchObject({ amounts: [{ remaining: 2 }] })
     expect(readBalance({ shape: 'openai-billing' }, [{ hard_limit_usd: 10 }, { total_usage: 100 }]))
       .toMatchObject({ amounts: [{ remaining: 9 }] })
+    expect(readBalance({ shape: 'opencode-windows' }, [{ usage: { weekly: { percent: 20 } } }]))
+      .toMatchObject({ windows: [{ name: 'weekly', remainingPercent: 80 }] })
   })
 })

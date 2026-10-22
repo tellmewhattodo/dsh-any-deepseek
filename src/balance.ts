@@ -87,6 +87,10 @@ export function balanceUrls(probe: BalanceProbe, channelBaseURL: string): string
       return [`${root}/user/balance`]
     case 'ollama':
       return [`${root}/api/balance`]
+    case 'opencode-windows':
+      // The Go subscription's usage windows. Note it is a sibling of the inference path, not a
+      // child of it: inference is `/zen/go/v1/{chat/completions}` and this is `/zen/go/v1/usage`.
+      return [`${root}/usage`]
     case 'openai-billing':
       // Two calls: the limit and the consumption live on different endpoints in this shape.
       return [`${root}/dashboard/billing/subscription`, `${root}/dashboard/billing/usage`]
@@ -283,6 +287,62 @@ export function parseOpenAIBilling(
 }
 
 /**
+ * Parse OpenCode Go's `GET /zen/go/v1/usage`.
+ *
+ * 🔴 **This surface reports WINDOWS, never money.** The owner remembered correctly that OpenCode
+ * exposes a usage query — and it does; what it does not expose (to an API key) is the credit
+ * wallet, which lives behind a logged-in browser session. The only key-authenticated money signal
+ * is the error thrown at $0 (anomalyco/opencode#44189), which is why the feature request asks for
+ * a `balance` object to be added to this very endpoint.
+ *
+ * Two response shapes are accepted, because a monitor should not break when the provider ships
+ * the requested addition:
+ *  · `{ usage: { rolling: {percent, resetsAt}, weekly: … , monthly: … } }`
+ *  · the same keys hoisted to the top level.
+ * A `balance` object is read IF PRESENT — so the day they merge that request, the number appears
+ * with no code change here.
+ * @param body - the parsed JSON body.
+ * @returns the reading, or undefined when the body carries no recognizable window.
+ */
+export function parseOpencodeWindows(body: unknown): BalanceReading | undefined {
+  const root = asRecord(body)
+  if (root === undefined) return undefined
+  const usage = asRecord(root.usage) ?? root
+
+  const windows: BalanceWindow[] = []
+  for (const name of ['rolling', 'weekly', 'monthly'] as const) {
+    const window = asRecord(usage[name])
+    if (window === undefined) continue
+    // Percent-of-limit consumed → remaining. The API names it `percent`; its direction is
+    // "used", which is the opposite of what this module reports, so it is inverted here and
+    // labelled accordingly rather than passed through and misread.
+    const used = num(window.percent)
+    if (used === undefined) continue
+    windows.push({
+      name,
+      remainingPercent: Math.max(0, Math.min(100, 100 - used)),
+      ...text(window.resetsAt) === undefined ? {} : { resetsAt: text(window.resetsAt) as string },
+    })
+  }
+
+  const amounts: BalanceAmount[] = []
+  const balance = asRecord(root.balance)
+  const usd = num(balance?.usd)
+  if (usd !== undefined) {
+    amounts.push({ currency: text(balance?.currency) ?? 'USD', remaining: usd })
+  }
+
+  if (windows.length === 0 && amounts.length === 0) return undefined
+  return {
+    amounts,
+    windows,
+    note: amounts.length === 0
+      ? 'subscription usage windows; the credit balance is not readable with an API key'
+      : undefined,
+  }
+}
+
+/**
  * Map one channel's raw bodies onto a reading, dispatching on the declared shape.
  * @param probe - the preset's declared probe.
  * @param bodies - response bodies in the order {@link balanceUrls} returned URLs.
@@ -297,6 +357,8 @@ export function readBalance(
       return parseDeepSeekBalance(bodies[0])
     case 'ollama':
       return parseOllamaBalance(bodies[0])
+    case 'opencode-windows':
+      return parseOpencodeWindows(bodies[0])
     case 'openai-billing':
       return parseOpenAIBilling(bodies[0], bodies[1])
   }

@@ -337,6 +337,21 @@ export async function fetchBalance(
       })
       const text = await response.text()
       if (!response.ok) {
+        /**
+         * 🔴 **404 means "this relay has no such route", not "the read failed".**
+         *
+         * The distinction decides what the user does next: `unsupported` says "this endpoint
+         * does not publish a balance — stop looking", while `unavailable` says "it should have
+         * but did not answer — try again". Reporting a 404 as a failure invites a retry loop
+         * against a route that will never exist.
+         *
+         * Measured: Open Design answers 404 on every billing candidate while `/v1/models`
+         * answers 401 (route exists, auth required) — that difference is how the two were told
+         * apart without a key.
+         */
+        if (response.status === 404) {
+          return { status: 'unsupported', detail: 'this relay has no balance route (HTTP 404)' }
+        }
         return {
           status: 'unavailable',
           code: `HTTP_${response.status}`,

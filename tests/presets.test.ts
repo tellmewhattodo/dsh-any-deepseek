@@ -111,4 +111,39 @@ describe('presets', () => {
       expect(CHANNEL_PRESETS[id]?.api, id).toBe('openai-completions')
     }
   })
+
+  describe('balance probes — declared only where measured', () => {
+    it('the verified shapes are wired to the right presets', () => {
+      expect(CHANNEL_PRESETS['deepseek-official']?.balance).toEqual({ shape: 'deepseek' })
+      expect(CHANNEL_PRESETS.ollama?.balance).toEqual({ shape: 'ollama', baseURL: 'https://ollama.com' })
+    })
+
+    it('🔴 a relay with NO balance route declares none', () => {
+      // 🔴 This pins a mistake that actually shipped in 0.0.13's first draft: the open-design
+      // entry declared `openai-billing` with a comment claiming it had been "probed live". It had
+      // not. The first real call returned 404, while `/v1/models` on the same host returned 401 —
+      // so the route does not exist at all.
+      //
+      // An invented shape is worse than no shape: it produces a transient-looking "读取失败" row,
+      // so the user retries forever against a route that will never exist.
+      expect(CHANNEL_PRESETS['open-design']?.balance).toBeUndefined()
+    })
+
+    it('🔴 OpenCode Go declares the WINDOWS shape — it has a query surface, but not a balance', () => {
+      // 🔴 The owner remembered correctly that OpenCode exposes a usage query, and it does:
+      // `/zen/go/v1/usage` answers **401** (route exists) while a made-up path under the same
+      // prefix answers **404**. My first version declared NO probe at all, which was wrong.
+      //
+      // What it returns is subscription windows (rolling/weekly/monthly) — NOT the credit
+      // wallet, which needs a logged-in browser session. `/zen/v1/balance` is 404: that endpoint
+      // is what anomalyco/opencode#44189 is still asking for.
+      expect(CHANNEL_PRESETS['opencode-go']?.balance).toEqual({ shape: 'opencode-windows' })
+    })
+
+    it('ollama overrides the base on purpose: inference /v1, balance /api', () => {
+      // Without the override, `balanceUrls` would append /api to the /v1 base and 404.
+      expect(CHANNEL_PRESETS.ollama?.balance?.baseURL).toBe('https://ollama.com')
+      expect(CHANNEL_PRESETS.ollama?.baseURL).toBe('https://ollama.com/v1')
+    })
+  })
 })
