@@ -25,6 +25,8 @@ import {
   summarize,
   totalOf,
   dayKey,
+  meanFirstTokenMs,
+  outputTokensPerSecond,
   type LedgerEntry,
 } from './usage-ledger.js'
 
@@ -97,6 +99,44 @@ function queryDate(value: string | null): Date | undefined {
 }
 
 /**
+ * The URL path and body a probe uses for one protocol.
+ *
+ * 🔴 **The probe used to hardcode `/chat/completions`.** With the Responses API now selectable
+ * per channel (owner directive 2026-10-22: 「优先支持并使用 responses api」), that would have
+ * probed the WRONG endpoint for every Responses channel and reported a verdict about a protocol
+ * the channel does not use. "A probe must send what a real request sends" already cost one round
+ * over headers; the rule applies unchanged to the path.
+ * @param channel - the channel being probed.
+ * @returns the path suffix and request body for its protocol.
+ */
+export function probeRequest(channel: ResolvedChannel): { path: string; body: unknown } {
+  if (channel.api === 'openai-responses') {
+    // Responses takes a plain `input` and caps output with `max_output_tokens`; `max_tokens` is a
+    // completions-only spelling.
+    return {
+      path: '/responses',
+      body: { model: channel.model, input: 'ping', max_output_tokens: 16, stream: false },
+    }
+  }
+  if (channel.api === 'anthropic-messages') {
+    // Anthropic's own shape: `max_tokens` is REQUIRED, and the key travels as `x-api-key`.
+    return {
+      path: '/messages',
+      body: { model: channel.model, max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] },
+    }
+  }
+  return {
+    path: '/chat/completions',
+    body: {
+      model: channel.model,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+      stream: false,
+    },
+  }
+}
+
+/**
  * Probe one channel with a minimal real request.
  *
  * This spends tokens, which is why it is an explicit route rather than something the panel does
@@ -120,22 +160,20 @@ export async function probeChannel(
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; ms: number; code?: string; message?: string; responded?: string }> {
   const started = Date.now()
-  const url = `${channel.baseURL.replace(/\/+$/, '')}/chat/completions`
+  const request = probeRequest(channel)
+  const url = `${channel.baseURL.replace(/\/+$/, '')}${request.path}`
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${key}`,
+        ...channel.api === 'anthropic-messages'
+          ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+          : { authorization: `Bearer ${key}` },
         ...channel.headers,
         ...requestHeadersFor(channel, sessionId),
       },
-      body: JSON.stringify({
-        model: channel.model,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-        stream: false,
-      }),
+      body: JSON.stringify(request.body),
       ...signal === undefined ? {} : { signal },
     })
     const ms = Date.now() - started
@@ -152,18 +190,7 @@ export async function probeChannel(
     if (text.includes('"error"')) {
       return { ok: false, ms, code: 'SERVER', message: text.slice(0, 400) }
     }
-    let responded = ''
-    try {
-      const parsed = JSON.parse(text) as { model?: unknown; choices?: Array<{ message?: { content?: unknown } }> }
-      responded = typeof parsed.model === 'string'
-        ? parsed.model
-        : typeof parsed.choices?.[0]?.message?.content === 'string'
-          ? parsed.choices[0].message.content
-          : ''
-    } catch {
-      responded = ''
-    }
-    return { ok: true, ms, responded }
+    return { ok: true, ms, responded: reportedName(text) }
   } catch (error) {
     return {
       ok: false,
@@ -172,6 +199,50 @@ export async function probeChannel(
       message: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/**
+ * What a successful probe response says the relay called its model.
+ *
+ * Three protocols, three response shapes — the old reader understood only completions
+ * (`choices[0].message.content`), so a Responses or Anthropic 200 came back with an empty verdict
+ * and the panel showed a blank success. A verdict nobody can read is not a verdict.
+ * @param text - the raw response body.
+ * @returns the reported model name, or the first output text; empty when neither is present.
+ */
+export function reportedName(text: string): string {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    return ''
+  }
+  const asString = (value: unknown): string => (typeof value === 'string' ? value : '')
+  // OpenAI-compatible completions, Anthropic messages, and Responses all report the served model
+  // under `model`; the fallbacks below only matter for gateways that omit it.
+  const model = asString(parsed.model)
+  if (model !== '') return model
+
+  // Responses: `output: [{type:'message', content:[{type:'output_text', text}]}]`
+  const output = parsed.output
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const content = (item as { content?: unknown }).content
+      if (!Array.isArray(content)) continue
+      for (const part of content) {
+        const value = asString((part as { text?: unknown }).text)
+        if (value !== '') return value
+      }
+    }
+  }
+  // Completions: `choices[0].message.content`
+  const choices = parsed.choices
+  if (Array.isArray(choices)) {
+    const first = choices[0] as { message?: { content?: unknown } } | undefined
+    const value = asString(first?.message?.content)
+    if (value !== '') return value
+  }
+  return ''
 }
 
 /** Map an HTTP status from a probe onto the same codes the runtime uses. */
@@ -268,7 +339,14 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
         const named = rows.map((row) => ({
           ...row,
           label: group === 'day' ? row.key : labels.get(row.key) ?? row.key,
+          // Speed is derived, never stored: one definition serves every consumer, and a change to
+          // the rule (e.g. excluding a generation time that came out negative) reaches the panel
+          // without a ledger migration. Null means "unmeasurable", which the panel renders as
+          // an em dash rather than a zero.
+          tokensPerSecond: outputTokensPerSecond(row.aggregate),
+          firstTokenMs: meanFirstTokenMs(row.aggregate),
         }))
+        const totalAggregate = totalOf(rows)
         json(res, 200, {
           range: {
             from: from?.toISOString() ?? null,
@@ -276,9 +354,17 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
             group,
           },
           rows: named,
-          total: totalOf(rows),
+          total: totalAggregate,
+          /**
+           * The footer's speed figures, computed from the TOTAL aggregate rather than by
+           * averaging the row values: a ratio of sums is the only one where a quiet channel
+           * cannot outweigh a chatty one. Same functions, one definition.
+           */
+          totalSpeed: outputTokensPerSecond(totalAggregate),
+          totalFirstTokenMs: meanFirstTokenMs(totalAggregate),
           // Stated in the payload so any consumer repeats it rather than inventing its own.
-          note: 'input is uncached input only; billable input = input + cacheRead + cacheWrite',
+          note: 'input is uncached input only; billable input = input + cacheRead + cacheWrite; '
+            + 'tokensPerSecond counts generation time only (total minus time-to-first-token)',
         })
       },
     },

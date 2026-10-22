@@ -18,7 +18,7 @@ import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
 import type { SettingsWire } from './index.js'
-import { formatTokens } from './panel-api.js'
+import { formatDuration, formatSpeed, formatTokens } from './panel-api.js'
 import './SettingsPage.css'
 
 /** What the plugin's `apply` hands this component. */
@@ -680,6 +680,8 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 <th className="ad-num">缓存写</th>
                 <th className="ad-num">输出</th>
                 <th className="ad-num">合计</th>
+                <th className="ad-num" title="生成阶段速度（不含首字等待）">速度</th>
+                <th className="ad-num" title="首字平均等待时间">首字</th>
               </tr>
             </thead>
             <tbody>
@@ -698,6 +700,13 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   <td className="ad-num">{formatTokens(row.aggregate.cacheWrite)}</td>
                   <td className="ad-num">{formatTokens(row.aggregate.output)}</td>
                   <td className="ad-num">{formatTokens(row.aggregate.total)}</td>
+                  {/*
+                    Speed comes last, after the volume columns, because it is a different kind of
+                    number: the rest are totals, this one is a rate. `—` means "not measured" and
+                    is deliberately not `0`.
+                  */}
+                  <td className="ad-num">{formatSpeed(row.tokensPerSecond)}</td>
+                  <td className="ad-num">{formatDuration(row.firstTokenMs)}</td>
                 </tr>
               ))}
               <tr className="ad-total">
@@ -709,6 +718,8 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 <td className="ad-num">{formatTokens(stats.total.cacheWrite)}</td>
                 <td className="ad-num">{formatTokens(stats.total.output)}</td>
                 <td className="ad-num">{formatTokens(stats.total.total)}</td>
+                <td className="ad-num">{formatSpeed(stats.totalSpeed)}</td>
+                <td className="ad-num">{formatDuration(stats.totalFirstTokenMs)}</td>
               </tr>
             </tbody>
           </table>

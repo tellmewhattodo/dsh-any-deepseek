@@ -77,6 +77,49 @@ export interface LedgerAggregate {
   billableInput: number
   /** `billableInput + output`. */
   total: number
+  /**
+   * Requests carrying a first-token measurement — the denominator for both speed figures.
+   *
+   * Kept separate from `requests` on purpose: not every request has one (an error before the
+   * first block has no first token, and ledger lines written before this field existed do not
+   * either). Dividing by `requests` would silently understate every average.
+   */
+  timed: number
+  /** Sum of observed time-to-first-token, over `timed` requests only. */
+  ttftMs: number
+  /** Sum of generation time (`ms - firstTokenMs`), over `timed` requests only. */
+  generationMs: number
+  /** Sum of `output` over `timed` requests — the numerator for generation throughput. */
+  timedOutput: number
+}
+
+/**
+ * Output tokens per second generated, or null when unmeasurable.
+ *
+ * 🔴 **Why not `output / total` (owner request 2026-10-22: 「能加上 token 速度统计吗」).**
+ * One ratio collapses queueing and generation together, so a relay that thinks for 3s and then
+ * streams fast looks identical to a uniformly slow one — and those two call for different fixes
+ * (switch relay vs. shrink the prompt). The split is measured per request and this divides only
+ * by the generating half.
+ *
+ * Averaged as a RATIO OF SUMS rather than a mean of per-request speeds: a mean lets one
+ * five-token reply dominate, while the sum ratio answers "across this group, how fast did tokens
+ * actually come out".
+ * @param aggregate - one group's figures.
+ * @returns tokens per second, or null when nothing was timed or nothing was generated.
+ */
+export function outputTokensPerSecond(aggregate: LedgerAggregate): number | null {
+  if (aggregate.generationMs <= 0 || aggregate.timedOutput <= 0) return null
+  return (aggregate.timedOutput * 1000) / aggregate.generationMs
+}
+
+/**
+ * Mean time to first token, in ms, or null when nothing was timed.
+ * @param aggregate - one group's figures.
+ */
+export function meanFirstTokenMs(aggregate: LedgerAggregate): number | null {
+  if (aggregate.timed <= 0) return null
+  return aggregate.ttftMs / aggregate.timed
 }
 
 /** Aggregation result for one grouping. */
@@ -99,6 +142,10 @@ export function emptyAggregate(): LedgerAggregate {
     reasoning: 0,
     billableInput: 0,
     total: 0,
+    timed: 0,
+    ttftMs: 0,
+    generationMs: 0,
+    timedOutput: 0,
   }
 }
 
@@ -118,7 +165,29 @@ export function addToAggregate(into: LedgerAggregate, entry: LedgerEntry): Ledge
   into.reasoning += usage.reasoning
   into.billableInput += usage.input + usage.cacheRead + usage.cacheWrite
   into.total += usage.input + usage.cacheRead + usage.cacheWrite + usage.output
+  recordSpeed(into, entry)
   return into
+}
+
+/**
+ * Fold one entry's speed measurement into the accumulators.
+ *
+ * Extraction is a bare subtraction, which can go negative when a relay reports a `ms` shorter
+ * than its first token (clock granularity, or a resume counted differently). A negative
+ * generation time would poison the ratio, so such an entry contributes to `timed`/`ttftMs` but
+ * not to `generationMs`/`timedOutput` — the honest reading is "we measured a start, not a rate".
+ * @param into - the group accumulator.
+ * @param entry - one finished request.
+ */
+function recordSpeed(into: LedgerAggregate, entry: LedgerEntry): void {
+  const firstTokenMs = entry.firstTokenMs
+  if (firstTokenMs === undefined) return
+  into.timed += 1
+  into.ttftMs += firstTokenMs
+  const generationMs = entry.ms - firstTokenMs
+  if (generationMs <= 0 || entry.usage === null) return
+  into.generationMs += generationMs
+  into.timedOutput += entry.usage.output
 }
 
 /** `YYYY-MM` for a timestamp, in the timestamp's own offset. */
@@ -323,6 +392,10 @@ export function totalOf(rows: readonly LedgerSummary[]): LedgerAggregate {
     total.reasoning += row.aggregate.reasoning
     total.billableInput += row.aggregate.billableInput
     total.total += row.aggregate.total
+    total.timed += row.aggregate.timed
+    total.ttftMs += row.aggregate.ttftMs
+    total.generationMs += row.aggregate.generationMs
+    total.timedOutput += row.aggregate.timedOutput
   }
   return total
 }

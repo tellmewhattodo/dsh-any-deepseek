@@ -26,6 +26,8 @@ import {
   ROUTE_PREFIX,
   registerStatsRoutes,
   probeChannel,
+  probeRequest,
+  reportedName,
   type RouteDeps,
   type WebServerLike,
 } from '../src/http.js'
@@ -341,6 +343,63 @@ describe('POST /probe', () => {
     await call(`${ROUTE_PREFIX}/channels`)
     await call(`${ROUTE_PREFIX}/stats`)
     expect(resolveKey).not.toHaveBeenCalled()
+  })
+})
+
+describe('probeRequest — a probe must speak the channel\'s protocol', () => {
+  /**
+   * 🔴 The probe hardcoded `/chat/completions`. With the Responses API selectable per channel
+   * (owner directive 2026-10-22), that would have probed the wrong endpoint and reported a
+   * verdict about a protocol the channel never uses — an answer that describes something other
+   * than the channel being tested.
+   */
+  it('🔴 a Responses channel is probed at /responses with max_output_tokens', () => {
+    const request = probeRequest(channel({ api: 'openai-responses', model: 'deepseek-flash' }))
+    expect(request.path).toBe('/responses')
+    const body = request.body as Record<string, unknown>
+    expect(body.input).toBe('ping')
+    // `max_tokens` is a completions spelling and is rejected on the Responses surface.
+    expect(body.max_tokens).toBeUndefined()
+    expect(body.max_output_tokens).toBeTypeOf('number')
+  })
+
+  it('a completions channel keeps /chat/completions and max_tokens', () => {
+    const request = probeRequest(channel({ api: 'openai-completions' }))
+    expect(request.path).toBe('/chat/completions')
+    expect((request.body as Record<string, unknown>).max_tokens).toBe(1)
+  })
+
+  it('an Anthropic channel goes to /messages with the required max_tokens', () => {
+    const request = probeRequest(channel({ api: 'anthropic-messages' }))
+    expect(request.path).toBe('/messages')
+    expect((request.body as Record<string, unknown>).max_tokens).toBeTypeOf('number')
+  })
+})
+
+describe('reportedName — reading all three response shapes', () => {
+  it('🔴 reads a Responses payload (output[].content[].text)', () => {
+    // The old reader understood only `choices[0].message.content`, so a Responses 200 came back
+    // with an empty verdict and the panel showed a blank success.
+    const text = JSON.stringify({
+      model: 'deepseek-flash',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'pong' }] }],
+    })
+    expect(reportedName(text)).toBe('deepseek-flash')
+  })
+
+  it('falls back to the output text when the gateway omits `model`', () => {
+    const text = JSON.stringify({
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'pong' }] }],
+    })
+    expect(reportedName(text)).toBe('pong')
+  })
+
+  it('still reads a completions payload', () => {
+    expect(reportedName(JSON.stringify({ choices: [{ message: { content: 'pong' } }] }))).toBe('pong')
+  })
+
+  it('returns empty rather than throwing on a non-JSON body', () => {
+    expect(reportedName('<html>not json</html>')).toBe('')
   })
 })
 

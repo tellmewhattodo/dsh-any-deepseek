@@ -95,4 +95,20 @@ describe('presets', () => {
     // CommandCode namespaces its ids by vendor — a spelling no other preset uses.
     expect(CHANNEL_PRESETS.commandcode?.model).toBe('deepseek/deepseek-v4.1-flash')
   })
+
+  it('🔴 prefers the Responses API where the endpoint documents it', () => {
+    // Owner directive (2026-10-22): 「优先支持并使用 responses api(这个api更先进)」.
+    // DeepSeek documents `POST /responses` for deepseek-flash, so the official preset leads.
+    expect(CHANNEL_PRESETS['deepseek-official']?.api).toBe('openai-responses')
+  })
+
+  it('🔴 but does NOT assume Responses where it is unverified', () => {
+    // "Prefer" is not "assume": a relay that 404s `/responses` would fail every request. A preset
+    // declares Responses only where the endpoint is documented to serve it; the rest stay on
+    // completions, the lowest common denominator. This pin is what stops a future blanket
+    // find-and-replace from silently breaking working relays.
+    for (const id of ['opencode-go', 'commandcode', 'ollama', 'open-design']) {
+      expect(CHANNEL_PRESETS[id]?.api, id).toBe('openai-completions')
+    }
+  })
 })

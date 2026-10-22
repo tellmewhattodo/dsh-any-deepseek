@@ -57,6 +57,19 @@ export interface StatsRow {
    * Optional only so an older server response still renders; the panel falls back to `key`.
    */
   label?: string
+  /**
+   * Output tokens per second over GENERATION time only (total minus time-to-first-token).
+   *
+   * Owner request (2026-10-22): 「能加上 token 速度统计吗」. The generating half is separated
+   * because one combined ratio cannot tell "slow to start" from "slow to generate", and those
+   * two call for different fixes.
+   *
+   * `null`/absent means unmeasurable (nothing in the group carried a first-token measurement).
+   * The panel renders an em dash for that, never `0`, which would read as "instant".
+   */
+  tokensPerSecond?: number | null
+  /** Mean time to first token, in ms; `null`/absent when nothing was timed. */
+  firstTokenMs?: number | null
   aggregate: {
     requests: number
     failures: number
@@ -76,6 +89,10 @@ export interface StatsResponse {
   range: { from: string | null; to: string | null; group: string }
   rows: StatsRow[]
   total: StatsRow['aggregate']
+  /** Footer throughput, computed server-side from the summed aggregate. */
+  totalSpeed?: number | null
+  /** Footer mean time to first token, computed server-side from the summed aggregate. */
+  totalFirstTokenMs?: number | null
   note?: string
 }
 
@@ -175,4 +192,32 @@ export function formatTokens(value: number): string {
   if (value < 1000) return String(value)
   if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}K`
   return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 2 : 1)}M`
+}
+
+/**
+ * Format a throughput figure, or an em dash when it is unmeasurable.
+ *
+ * 🔴 `null` is NOT zero: a group with no first-token measurement has no speed, and printing `0`
+ * would claim the relay produced nothing — a different and much worse statement. The em dash
+ * says "not measured", which is the truth.
+ * @param value - tokens per second, or null/undefined.
+ * @returns e.g. `42 tok/s`, or `—`.
+ */
+export function formatSpeed(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return '—'
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} tok/s`
+}
+
+/**
+ * Format a duration in ms compactly.
+ * @param value - milliseconds, or null/undefined.
+ * @returns e.g. `820ms` / `1.4s` / `2m 05s`, or `—`.
+ */
+export function formatDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return '—'
+  if (value < 1000) return `${Math.round(value)}ms`
+  const seconds = value / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${String(Math.round(seconds - minutes * 60)).padStart(2, '0')}s`
 }

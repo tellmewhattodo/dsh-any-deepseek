@@ -342,6 +342,33 @@ describe('what the rules demand of the wire', () => {
     const presets = readFileSync(join(process.cwd(), 'src', 'presets.ts'), 'utf-8')
     expect(presets).toContain('export const CLIENT_USER_AGENT')
   })
+
+  it('🔴 the provider dispatches per protocol — NOT one hardcoded implementation', () => {
+    /**
+     * 🔴 This is the shape that made `channel.api` decorative.
+     *
+     * `createProvider` treats a SINGLE implementation as "serves every model"
+     * (`pi-ai/dist/models.js:529-532`: `single = input.api && typeof input.api.stream ===
+     * 'function'`). So passing `api: openAICompletionsApi()` meant `model.api` was never
+     * consulted and every channel went out over the completions wire, no matter what its `api`
+     * field said. The setting was accepted, shown in the panel, and silently ignored.
+     *
+     * ⚠️ **Asserted structurally, and that is deliberate.** Reverting the fix to the single
+     * implementation left every other test GREEN, because the transport is faked in tests and
+     * the wrong protocol still "works" against a mock. The dispatch decision itself is therefore
+     * the thing to pin: it must be a map keyed by protocol.
+     */
+    const adapter = readFileSync(join(process.cwd(), 'src', 'adapter.ts'), 'utf-8')
+    expect(adapter).toContain('api: apiImplementations()')
+    // The old broken form must not come back. Matched WITH the trailing comma so this pins the
+    // code line, not the prose that explains why it was wrong (the comment quotes the old shape).
+    expect(adapter).not.toContain('api: openAICompletionsApi(),')
+    // And the map must actually cover every protocol the schema accepts, or a channel naming
+    // one of them fails at dispatch with "no API implementation for …".
+    for (const protocol of ['openai-completions', 'openai-responses', 'anthropic-messages']) {
+      expect(adapter, protocol).toContain(`'${protocol}'`)
+    }
+  })
 })
 
 describe('what stays forbidden', () => {

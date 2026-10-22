@@ -47,11 +47,13 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from '@earendil-works/pi-ai'
-// The factory lives on the lazy subpath (the root entry does not re-export it); it defers the
-// OpenAI SDK load to the first request, which is why the plugin boots quickly.
+// The factories live on the lazy subpaths (the root entry does not re-export them); they defer
+// the OpenAI SDK load to the first request, which is why the plugin boots quickly.
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
+import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
+import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy'
 
-import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelModality } from './presets.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelApi, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
 import type { LedgerEntry } from './usage-ledger.js'
@@ -260,6 +262,45 @@ export function buildPiModel(channel: ResolvedChannel): Model<Api> {
     ...channel.compat === undefined ? {} : { compat: channel.compat as Record<string, never> },
     ...channel.headers === undefined ? {} : { headers: { ...channel.headers } },
   }
+}
+
+/**
+ * The transport implementation for one wire protocol.
+ *
+ * 🔴 **This table is the fix for a silent hole.** The provider was built with
+ * `api: openAICompletionsApi()` — a SINGLE implementation. `createProvider` treats a single
+ * implementation as "serves every model" (`models.js:529-532`: `single = input.api &&
+ * typeof input.api.stream === 'function'`), so `model.api` was never consulted and every channel
+ * went out over the completions wire **no matter what its `api` field said**. A channel
+ * configured for `openai-responses` therefore produced completions requests: the setting was
+ * accepted, shown in the panel, and silently ignored. Same class as the other defects this
+ * plugin has paid for — accepted, rendered, and not in effect.
+ *
+ * Passing a MAP instead makes `createProvider` dispatch on `model.api` (`models.js:555`
+ * `apiFor`), and a model naming an unimplemented protocol fails loudly with
+ * `has no API implementation for "<api>"` rather than silently using the wrong one.
+ */
+const API_FACTORIES: Record<ChannelApi, () => ApiStreams> = {
+  'openai-completions': openAICompletionsApi as unknown as () => ApiStreams,
+  'openai-responses': openAIResponsesApi as unknown as () => ApiStreams,
+  'anthropic-messages': anthropicMessagesApi as unknown as () => ApiStreams,
+}
+
+/** The shape `createProvider` accepts per protocol (an object with `stream`/`streamSimple`). */
+type ApiStreams = ReturnType<typeof openAICompletionsApi>
+
+/**
+ * Build the per-protocol implementation map for the pi-ai provider.
+ *
+ * Every supported protocol is constructed eagerly because the factories are lazy internally
+ * (they load the SDK on first use), so this costs one closure each, not one SDK download.
+ */
+export function apiImplementations(): Record<string, ApiStreams> {
+  const table: Record<string, ApiStreams> = {}
+  for (const [protocol, factory] of Object.entries(API_FACTORIES)) {
+    table[protocol] = factory()
+  }
+  return table
 }
 
 /** One resolved image, keyed by attachment id. */
@@ -775,6 +816,20 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     let channel: ResolvedChannel | undefined
     let outcome: CallOutcome = { ok: false, code: 'UNKNOWN', usage: null }
     let recorded = false
+    /**
+     * Time to the first streamed block, in ms from request start.
+     *
+     * 🔴 Owner request (2026-10-22): 「能加上 token 速度统计吗」. Throughput cannot be recovered
+     * from the totals alone — `output / totalMs` folds in queueing and time-to-first-token, so a
+     * relay with slow first-token but fast generation looks identical to a uniformly slow one.
+     * Recording the split makes the two visible separately, and both numbers are already
+     * measurable at this boundary: the first `block-start` is the moment generation began.
+     *
+     * Guards that matter: it is measured ONCE (first block only), and only for a call that got
+     * that far — an error before any block leaves it undefined rather than reporting 0, which
+     * would read as "instant first token".
+     */
+    let firstTokenMs: number | undefined
 
     const finish = async (): Promise<void> => {
       if (recorded || channel === undefined) return
@@ -785,6 +840,7 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
         model: channel.model,
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         ...options.purpose === undefined ? {} : { purpose: options.purpose },
+        ...firstTokenMs === undefined ? {} : { firstTokenMs },
         ok: outcome.ok,
         ms: Math.max(0, Math.round(this.deps.elapsed() - startedAt)),
         usage: outcome.usage === null ? null : {
@@ -839,7 +895,8 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       baseUrl: channel.baseURL,
       auth: { apiKey: { name: channel.label, resolve: async () => ({ auth: { apiKey: key } }) } },
       models: [model],
-      api: openAICompletionsApi(),
+      // 🔴 A MAP, not a single implementation: this is what makes `channel.api` take effect.
+      api: apiImplementations(),
     }))
 
     /**
@@ -879,6 +936,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       const images = await collectImages(options, this.deps.readImage)
       const events = models.streamSimple(model, toPiContext(options, images), streamOptions)
       for await (const chunk of toStreamChunks(events, (observed) => { outcome = observed })) {
+        // The first block is the moment the relay started emitting content, so it is what
+        // separates "slow to start" from "slow to generate".
+        if (firstTokenMs === undefined && chunk.type === 'block-start') {
+          firstTokenMs = Math.max(0, Math.round(this.deps.elapsed() - startedAt))
+        }
         yield chunk
       }
     } catch (error) {

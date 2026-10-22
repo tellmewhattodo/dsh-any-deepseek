@@ -14,6 +14,8 @@ import {
   readLedgerRange,
   summarize,
   totalOf,
+  meanFirstTokenMs,
+  outputTokensPerSecond,
   type LedgerEntry,
 } from '../src/usage-ledger.js'
 
@@ -191,5 +193,70 @@ describe('range filtering', () => {
     await writeFile(join(dir, ledgerFileName('2026-09')), 'not json at all\n', 'utf8')
     const rows = await readLedgerRange(dir)
     expect(rows.map((e) => e.channel)).toEqual(['ok'])
+  })
+})
+
+describe('token speed (owner: 「能加上 token 速度统计吗」)', () => {
+  /**
+   * 🔴 The distinction this suite protects: throughput must be computed over GENERATION time
+   * only. `output / totalMs` folds in the wait for the first token, so a relay that thinks for
+   * 3s then streams fast would look identical to a uniformly slow one — and those two call for
+   * completely different fixes.
+   */
+
+  it('🔴 divides by generation time, NOT by total time', () => {
+    // The fixture emits 50 output tokens; 400ms to first token, then 600ms generating
+    // ⇒ 50 tokens / 0.6s. A total-time ratio would have said 50/1.0 = 50 tok/s — understating
+    // the true generation rate by 40%, and misreporting "slow to start" as "slow overall".
+    const aggregate = addToAggregate(emptyAggregate(), entry({ ms: 1000, firstTokenMs: 400 }))
+    expect(outputTokensPerSecond(aggregate)).toBeCloseTo(50 / 0.6, 5)
+    // The two numbers are genuinely different, which is the whole point of splitting them.
+    expect(outputTokensPerSecond(aggregate)).not.toBeCloseTo(50 / 1.0, 5)
+    expect(meanFirstTokenMs(aggregate)).toBe(400)
+  })
+
+  it('averages as a ratio of sums, so one tiny reply cannot dominate', () => {
+    // Two requests: a 5-token fast one and a 500-token slower one. A mean of per-request speeds
+    // would weight them equally; the honest answer is "across the group, this is the rate".
+    const accumulator = emptyAggregate()
+    addToAggregate(accumulator, entry({ ms: 100, firstTokenMs: 50, usage: { input: 0, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }))
+    addToAggregate(accumulator, entry({ ms: 550, firstTokenMs: 50, usage: { input: 0, output: 500, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }))
+    // 505 tokens over 50+500=550ms of generation.
+    expect(outputTokensPerSecond(accumulator)).toBeCloseTo(505 / 0.55, 5)
+  })
+
+  it('🔴 reports null (not zero) when nothing was timed', () => {
+    // No `firstTokenMs` anywhere — e.g. every entry predates the field. Zero would claim the
+    // relay produced nothing, which is a different and much worse statement than "not measured".
+    const aggregate = addToAggregate(emptyAggregate(), entry())
+    expect(outputTokensPerSecond(aggregate)).toBeNull()
+    expect(meanFirstTokenMs(aggregate)).toBeNull()
+  })
+
+  it('🔴 ignores a generation time that came out negative or zero', () => {
+    // Guards the ratio: a relay reporting ms <= firstTokenMs (clock granularity, resumed call)
+    // must not produce a negative denominator.
+    const aggregate = addToAggregate(emptyAggregate(), entry({ ms: 300, firstTokenMs: 300 }))
+    expect(outputTokensPerSecond(aggregate)).toBeNull()
+    // The first-token measurement itself is still real and still averaged.
+    expect(meanFirstTokenMs(aggregate)).toBe(300)
+  })
+
+  it('counts only timed requests in the denominator', () => {
+    const accumulator = emptyAggregate()
+    addToAggregate(accumulator, entry({ ms: 1000, firstTokenMs: 200 }))
+    addToAggregate(accumulator, entry({ ms: 1000 })) // no measurement
+    expect(accumulator.requests).toBe(2)
+    expect(accumulator.timed).toBe(1)
+    // 50 tokens over 800ms — NOT 50 tokens over 1800ms.
+    expect(outputTokensPerSecond(accumulator)).toBeCloseTo(50 / 0.8, 5)
+  })
+
+  it('sums speed fields into the footer total', () => {
+    const total = totalOf(summarize([entry({ ms: 1000, firstTokenMs: 200 })], () => 'k'))
+    expect(total.timed).toBe(1)
+    expect(total.ttftMs).toBe(200)
+    expect(total.generationMs).toBe(800)
+    expect(outputTokensPerSecond(total)).toBeCloseTo(50 / 0.8, 5)
   })
 })

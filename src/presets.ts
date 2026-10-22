@@ -187,10 +187,28 @@ export const OPENCODE_SESSION_FALLBACK = 'dsh-any-deepseek'
  *
  * The id is what a channel entry stores (`preset: opencode-go`), so it is part of the user's
  * configuration surface: renaming one breaks saved channels. Add, do not rename.
+ *
+ * ## Why every preset prefers the Responses API
+ *
+ * Owner directive (2026-10-22): 「对于各家查阅资料，优先支持并使用 responses api(这个api更先进)」.
+ * Responses is the newer surface: it carries reasoning items as first-class output, reports
+ * `output_tokens_details.reasoning_tokens`, and supports server-side state/tool primitives the
+ * completions shape cannot express.
+ *
+ * 🔴 **But "prefer" is not "assume".** A relay that answers `/responses` with 404 would break
+ * every request if this were a blanket switch, so the rule is: a preset declares Responses ONLY
+ * where the endpoint is documented to serve it; everything else keeps completions, which is the
+ * lowest common denominator every relay speaks. `api` stays a per-channel field, so a user can
+ * override any of them in the panel without waiting for a release.
+ *
+ * DeepSeek's own docs confirm `/responses` with `deepseek-flash`, including `input_image` — so
+ * the official preset is the first to move and is the reference case.
  */
 export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
   'opencode-go': {
     displayName: 'OpenCode Go',
+    // Unchanged: this endpoint documents a completions surface (`/zen/go/v1`) and its private
+    // session-header contract. Switching it would trade a working route for an unverified one.
     api: 'openai-completions',
     baseURL: 'https://opencode.ai/zen/go/v1',
     model: 'deepseek-v4.1-flash',
@@ -224,7 +242,11 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
   },
   'deepseek-official': {
     displayName: 'DeepSeek Official',
-    api: 'openai-completions',
+    // 🔴 The reference case for the Responses directive: DeepSeek documents `POST /responses`
+    // for `deepseek-flash` (including `input_image`, `reasoning.effort`, and
+    // `output_tokens_details.reasoning_tokens`). Verified against its API reference rather than
+    // assumed from the completions route it also serves.
+    api: 'openai-responses',
     baseURL: 'https://api.deepseek.com',
     // 🔴 DeepSeek's own API does NOT accept the id the relays use. Measured from its own
     // rejection (owner report, 2026-10-22):
