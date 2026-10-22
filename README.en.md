@@ -1,43 +1,39 @@
 # dsh-any-deepseek
 
-Collapse several DeepSeek relays into **one** provider with **one** model: paste a key per channel
-in the settings panel, click to switch.
+**Use DeepSeek credit from several providers inside DeepSeek Harness — with one extra row in the
+model list, not N.**
 
-A small open-source tool (MIT). Fork it, add a relay, improve it — see
-[Contributing](#contributing).
+You bought DeepSeek credit in several places: the official API, a relay, a cloud vendor, a cheap
+one a friend recommended. This plugin collects them into **one** provider: paste a few keys, click
+to switch — and usage is booked per real upstream, so you can see what each one cost this month.
+
+![Channel list](docs/screenshot-channels.png)
 
 [中文](README.md) · English (this page)
 
-![Channels tab](docs/screenshot-channels.png)
-
 ---
 
-## What problem this solves
+## Before you install: is this for you?
 
-You have DeepSeek credit in several places: the official API, a relay, a cloud vendor, a
-colleague's cheap recommendation. In DeepSeek Harness, that would normally become **N entries in
-the model picker**, and every switch means editing configuration, changing the model id, changing
-the key — plus you have to remember yourself which relay spent how many tokens this month.
+**Yes**, if any of these is true:
 
-After installing this plugin:
+- You have **more than one** DeepSeek endpoint and want to switch between them without editing
+  configuration.
+- You want **per-channel usage accounting** instead of one blended total.
+- You use relays whose model ids differ (`deepseek-v4.1-flash` / `deepseek/deepseek-v4.1-flash` /
+  `deepseek-flash`) and don't want to keep track yourself.
 
-- The model picker has **one row**: `any-deepseek / deepseek-v4.1-flash`.
-- Any number of **channels** hang off it; each is an endpoint + a key + a display name.
-- Click a channel's dot and requests go there. **No automatic switching** (see
-  [Why no failover](#why-no-failover)).
-- Usage is booked **per real upstream**.
+**No**, if:
 
-```
-                ┌── channel A (official)   ← currently selected
-composer ──────►│
-  │             ├── channel B (a relay)
-  ▼             └── channel C (another)
-any-deepseek
-  / deepseek-v4.1-flash
-   (the only model exposed)
-```
+- You have a single endpoint and it is the official one — the built-in `deepseek-official` already
+  covers you; this plugin is unnecessary.
+- You want **automatic failover** (one endpoint dies, requests move to the next). v1 does not do
+  that — see [Why no failover](#why-no-failover).
+- You want to **switch between models**. This is "one model, many sources", not a model router.
 
 ## Install
+
+Requires DeepSeek Harness to be installed already. In a terminal:
 
 ```bash
 dsh plugin --profile web add dsh-any-deepseek
@@ -45,233 +41,177 @@ dsh plugin --profile web add dsh-any-deepseek
 
 Then **restart DSH** and open Settings → **Any DeepSeek**.
 
-> **A first install requires a restart**: the profile's layer list changed, and the composition
-> graph is built at boot. Editing an already-installed plugin's client half reloads in the
-> browser; its node half does not.
->
-> `dsh plugin` forwards its arguments to pnpm, so `add <spec>` accepts a registry name, a tarball
-> path, or a local directory (installed as a symlink).
+> **Why the restart**: the plugin is added to the profile's load list, which is read only at
+> startup. Afterwards, changing this plugin's UI half needs only a browser refresh — but the
+> **first install** needs the restart.
 
-## Usage
+## First run: three steps
 
-### Add a channel
+### 1. Add a channel
 
-Click **添加渠道**. Only two things are required:
+Click **添加渠道** (Add channel). Two fields are required:
 
-| Field | Required | Meaning |
-|---|---|---|
-| **规格** (preset) | ✅ | Determines endpoint, upstream model id, and protocol — so you don't type them. |
-| **渠道 id** (channel id) | ✅ | The configuration key, `[a-z0-9][a-z0-9_-]*`. The same preset can be added twice; the second becomes `-2`. |
-| **显示名** (display name) | — | Display only. Tells two accounts on the same relay apart. **Renaming never touches the id.** |
-| **密钥** (key) | ✅ | The key itself. There is no name to invent. |
+![Add channel](docs/screenshot-add-channel.png)
 
-Bundled presets: **DeepSeek Official**, **OpenCode Go**, **Ollama Cloud**, **Open Design**,
-**CommandCode**. For another relay, see [Adding a channel](#adding-a-channel).
+| Field | What it means |
+|---|---|
+| **规格** (preset) | Pick your provider. It determines the endpoint, model id, and protocol — so you don't type them. |
+| **密钥** (key) | The key that provider gave you. Paste it. There is no name to invent. |
+
+**渠道 id** (channel id) is filled in for you — it is just the configuration key, and you can
+change it. **显示名** (display name) defaults to the preset name; when you run two accounts on the
+same provider, set something like "main" / "backup".
+
+Bundled presets: DeepSeek Official, OpenCode Go, Ollama Cloud, Open Design, CommandCode.
+For another provider, see [Adding a provider](#adding-a-provider).
+
+### 2. Make sure it is selected
+
+The first channel you add **becomes the current channel automatically** — its row gets a radio
+dot, a colour bar down the left edge, and a 「当前」 badge.
+
+To switch later: click the dot at the left of a row.
+
+### 3. Start using it
+
+In the model picker, choose **DeepSeek V4.1 Flash** (the provider is `any-deepseek`).
+Every request then goes to whichever channel you selected.
+
+## Three things you will actually do
 
 ### Switch channels
 
-Click the dot at the left of a row. The current channel is marked three ways — a colour bar down
-the left edge, a stronger border, and a tinted fill — plus `aria-current`.
+Click the dot at the left of a row.
 
-**Switching invalidates the prompt cache for the running conversation**, so switch at a natural
-boundary or start a new session.
+> ⚠️ **Switching invalidates the prompt cache for the running conversation**, so switch at a topic
+> boundary, or just start a new session.
 
-### Remaining balance
+### See how much credit is left
 
-Click **查询余额** (on demand; nothing is scanned when the panel opens). Four outcomes are kept
-strictly apart, because each calls for a different action:
+Click **查询余额** (Check balance). It does not run when the panel opens — each check calls every
+provider's server.
 
-| Shown | Meaning |
+Different providers can report different things, and the panel keeps them apart:
+
+| What you see | Meaning |
 |---|---|
-| `642.44 CNY` / `55.48 USD` | An amount was read |
-| `rolling 100% · weekly 81% · monthly 75%` | This relay reports **usage windows**, not money |
-| **余额未尽** (no balance API; verified live: …) | No balance API, but a live request **succeeded** ⇒ the account is not blocked for lack of credit. **Not an amount** (see below) |
+| `642.44 CNY`, `55.48 USD` | This provider reports an amount |
+| `rolling 100% · weekly 81% · monthly 75%` | This provider reports **subscription usage percentages**, not money |
+| **余额未尽** (verified live: …) | This provider has **no balance API**, but a minimal live request **succeeded** ⇒ the account is not blocked |
 | 不支持查询 / 读取失败 / 未配置密钥 | Three different kinds of "nothing" |
 
-> ⚠️ **"Not exhausted" is not "how much is left".** It is the result of one minimal real request
-> (a token or two) succeeding, which proves exactly three things: the endpoint is serving, the key
-> works, and the account is not blocked for lack of credit (an exhausted account answers
-> 402/quota, not 200). So the panel says only 「未尽」 and **never fabricates an amount** —
-> printing `0.00` would read as "you are out of credit", the opposite of the truth.
+> **"Not exhausted" is not "how much is left".** One successful request proves exactly three
+> things: the endpoint is reachable, the key is valid, and the account is not blocked for lack of
+> credit (an exhausted account answers 402, not 200). So the panel says only 「未尽」 and **never
+> invents an amount**.
 
-> ⚠️ **A missing number is never rendered as `0`.** "We could not read it" and "it is empty" lead
-> to opposite actions.
+### See what this month cost
 
-### Usage
+Switch to the **用量** (Usage) tab.
 
-![Usage tab](docs/screenshot-usage.png)
+![Usage](docs/screenshot-usage.png)
 
-One row per channel, groupable by channel or by day.
+Group by channel or by day. "Input" counts only cache misses; cache reads and writes are separate
+columns, and the three together are the billable input. In the speed column, `—` means
+**unmeasured — not zero**.
 
-**Counting convention** (the panel prints it too): harness token counts are **disjoint** —
-**input** is uncached input only, cache reads and writes are separate columns, and the three
-together are the **billable input**. Treating "input" as the total makes it look under-reported.
+## Is my key safe
 
-**Speed** counts generation time only (total minus time-to-first-token). Blending queueing +
-first-token wait + generation into one number makes "slow to start" and "slow throughout" read
-identically, and those two call for opposite fixes. `—` means unmeasured, **not zero**.
+**It is stored in your local configuration file, in plaintext.**
 
-## Configuration
+The path is `channels.<channel-id>.apiKey` inside the profile. The plugin never sends it to any
+third party, but:
 
-Everything lives under one settings namespace — the **profile entry id** from
-`cordis.patch.yml`, which is what the panel binds to:
+> ⚠️ `dsh --dump-config` prints the configuration verbatim and does **not** redact it. So:
+> **do not share your profile configuration**, and do not paste its `git diff` anywhere public.
+
+If you need to share config for troubleshooting, delete the `apiKey` lines first.
+
+## Troubleshooting
+
+**The model list has no DeepSeek V4.1 Flash.**
+→ You have not restarted since installing. Restart DSH.
+
+**Settings has no "Any DeepSeek".**
+→ Same; or check you installed into the `web` profile: `dsh plugin --profile web list`.
+
+**`MISSING_CREDENTIAL`.**
+→ That channel has no key yet. Its status dot is hollow; click 「填写密钥」 to add one.
+
+**`NO_CHANNEL_SELECTED`.**
+→ No channel is selected. The panel shows a hint at the bottom; click any row's dot.
+
+**「查询余额」 shows 「读取失败」.**
+→ That provider did not answer properly just now; retry. If it never works, your network may not
+reach it.
+
+**401 / 403 / out of credit.**
+→ The key is wrong or expired, or that account really is out of money.
+
+**Answers got slower or worse after switching.**
+→ Providers do not behave identically. Use the 测试 (Test) button per channel, and the 用量 tab to
+compare speeds.
+
+## Why no failover
+
+A failing channel reports its own error; it never silently moves to another. Three reasons:
+
+- Silent failover makes "who answered this?" unknowable, while the usage table honestly records
+  the other provider — the two parts would disagree.
+- Switching mid-conversation invalidates the prompt cache, costing more than the failure saved.
+- Failure is information. Hide it and you never learn a provider is degrading.
+
+## Adding a provider
+
+Five are bundled; adding another usually touches one file. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+## Configuration reference (advanced)
+
+Everything lives under the `dsh-any-deepseek` namespace:
 
 ```yaml
 dsh-any-deepseek:
-  current: opencode-go          # the live channel
+  current: opencode-go          # the current channel
   channels:
     opencode-go:
       apiKey: sk-…              # the key itself
     open-design:
-      preset: open-design
-      label: Open Design (main)  # optional display name
+      preset: open-design       # use a bundled preset
+      label: Open Design (main) # optional display name
+    my-relay:
+      baseURL: https://relay.example/v1   # or declare it fully
+      model: deepseek-v4.1-flash
+      apiKey: sk-…
   usage:
     enabled: true
 ```
 
-`channels.<id>` may be either:
+**Protocol**: defaults to `openai-completions` (almost every relay speaks it). Set `api:
+openai-responses` or `api: anthropic-messages` on **that one channel** only when it really speaks
+something else.
 
-- **preset-backed** — `preset: opencode-go`, plus optional overrides; or
-- **fully declared** — `baseURL` + `model` required, `api` defaults to `openai-completions`,
-  and `contextWindow` / `maxTokens` fall back to documented defaults (the panel shows ⚠ on the
-  row when a default was applied rather than declared).
+**Thinking level**: each channel declares which levels it supports, and the level you pick in the
+UI is the one sent upstream. Unsupported levels are not offered in the picker.
 
-### Where the key lives (please read this part)
+**Images**: sending and receiving images is supported.
 
-`apiKey` holds the key **itself**, on the channel. The panel never asks you to invent a name for
-it — you paste the key and it is written here.
+**Legacy config**: early versions stored the key in `apiKeyEnv`. That field is still read — a value
+that looks like an environment-variable name is resolved as one, otherwise it is used as the key
+itself. `apiKey` always wins, so re-entering the key once in the panel migrates the entry.
 
-⚠️ **That means the key is in your profile configuration.** `dsh --dump-config` prints patch
-layers verbatim and does **not** redact, so a diagnostic dump or a `git diff` of the profile
-includes it. **Do not share the profile document.** Environment-variable injection
-(`-e SOME_KEY=…`) is not consulted — nothing resolves a name.
+## Boundaries
 
-> An earlier version hid the key behind a "credential reference name" and told you to set it "in
-> the credential centre" — a UI that does not exist. The current design is one field, one store,
-> one write.
-
-`apiKeyEnv` is still **read**, for configurations written before this change: when its value
-matches the reference-name grammar (`^[A-Za-z_][A-Za-z0-9_]*$`) it is resolved as a name; when it
-does not, it cannot be one, so it is adopted as the key itself. `apiKey` always wins when both are
-present, so re-entering the key once in the panel migrates an entry.
-
-A channel with no key **still appears** in the panel — that is how you find and fix it. Requests
-through it fail with `MISSING_CREDENTIAL`, and its row shows a hollow dot.
-
-### Protocols
-
-`openai-completions` is the default and the recommendation: almost every relay speaks it, it
-exposes the largest compatibility surface (~20 switches), and its usage normalization already
-reconciles the three cache-token spellings relays use
-(`prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens`, top-level `cached_tokens`).
-
-Set `api` on one channel only when that relay speaks something else (`openai-responses`,
-`anthropic-messages`). The panel never changes protocol behind your back.
-
-### Thinking level
-
-Each channel declares its selectable thinking levels, and the level picked in the harness is
-passed through to the relay:
-
-```
-harness reasoningEffort → pi-ai ThinkingLevel → model.thinkingLevelMap → wire value
-```
-
-**There is no second mapping layer in this plugin**: the `thinkingLevelMap` the transport applies
-**is** the mapping, and a second one would drift from it. A level declared `null` is unsupported
-and is not offered in the picker.
-
-### Image input
-
-Supported. A channel can send and receive images, which requires declaring `input` with `image` —
-during **model registration** (`inputModalities`), not in the request path. This was a real
-defect: capability is a property of the provider, not of a channel or a single request.
-
-## Why no failover
-
-v1 is deliberately manual. A failing channel reports its own error; it does not silently fall over
-to another:
-
-- Silent failover makes "who answered this?" unknowable, while the usage table honestly records
-  the other relay — two parts of the UI would disagree.
-- Switching mid-conversation invalidates the prompt cache, costing more than the failure saved.
-- Failure is information. Hiding it means you never learn a relay is degrading.
-
-## Adding a channel
-
-This is a **small practical plugin**, and adding a relay is the most valuable contribution —
-usually it touches one file.
-
-### Add a preset (the common case)
-
-Edit [`src/presets.ts`](src/presets.ts) and add an entry to `CHANNEL_PRESETS`:
-
-```ts
-'your-relay': {
-  displayName: 'Your Relay',
-  api: 'openai-completions',
-  baseURL: 'https://your-relay.example/v1',
-  // 🔴 Use THIS relay's spelling. Model ids differ per relay:
-  //    deepseek-v4.1-flash / deepseek/deepseek-v4.1-flash / deepseek-flash …
-  //    A wrong spelling does not error here — the upstream rejects it on the first request.
-  model: 'deepseek-v4.1-flash',
-  ...V41_FLASH_CAPS,
-  // Optional: does this relay expose a balance surface, and which shape?
-  // balance: { shape: 'openai-billing' },
-},
-```
-
-That is enough — the preset picker gains the entry automatically.
-
-⚠️ **Two rules** (both from real costs):
-
-1. **Do not write "probed live" in a comment unless you actually probed it.** This repo once
-   carried a `Probed live: the billing pair answers` comment for a route that had never been
-   called; the first real call returned 404. **A false claim is worse than no comment**, because
-   it stops the next reader from checking.
-2. **`model` is the upstream spelling, not our id.** We expose exactly one id,
-   `deepseek-v4.1-flash`; per-relay spellings are absorbed by presets — that is the whole point
-   of this plugin.
-
-### Add a balance shape (rarer)
-
-If a relay has a balance API with a new shape, edit [`src/balance.ts`](src/balance.ts): add a
-`shape`, add a `parseXxx()`, give it a path in `balanceUrls()`, and dispatch it in `readBalance()`.
-`balanceUrls()` is the **only** place that knows the paths, so a preset cannot disagree with the
-transport.
-
-### Gates (run before committing)
-
-```bash
-pnpm run typecheck     # two tsconfigs: node half + client half
-pnpm run test          # pure layers only; no harness needed
-pnpm run build         # lib/index.js + lib/client.js
-```
-
-Changes must come with a test **that can go red**. The rule in this repo is that **a judgement must
-carry weight** — revert the fix and the test must fail; otherwise it is decoration. Every
-significant claim in the code carries its negative-control result.
-
-## Known boundaries
-
-- Does not modify the harness, and does not replace `deepseek-official` / `llm-pi-ai` routes.
-- Exposes exactly one model id. Upstream ids differ per relay and are mapped in presets.
-- **No cost estimation** (there is no price table).
-- **No automatic failover** (v1, see above).
-- **No multi-model aggregation** — this is "one model, many sources", not a model router.
-
-## Contributing
-
-Fork, file an issue, send a PR. Especially welcome:
-
-- **Add a relay** — one file, see above.
-- **Fix a sentence** — every line in the panel is supposed to be a verifiable fact. If one is
-  vague or stale, change it.
-- **Report "installed but nothing happens"** — silent failure is the most expensive class of bug
-  in this project, and a reproduction is worth more than any guess.
-
-Source: <https://github.com/tellmewhattodo/dsh-any-deepseek>
+- Does not modify Harness itself, and does not replace the built-in `deepseek-official` route.
+- Exposes exactly one model id (`deepseek-v4.1-flash`); per-provider upstream ids are mapped by
+  presets.
+- **No cost estimation** — there is no price table, only token counts.
+- **No automatic failover** (v1).
+- **No multi-model aggregation**.
 
 ## License
 
-MIT
+MIT. This is a small practical tool — forks, issues and PRs are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+<https://github.com/tellmewhattodo/dsh-any-deepseek>

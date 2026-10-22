@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   ADVERTISED_MODEL_ID,
   CHANNEL_PRESETS,
@@ -147,3 +149,62 @@ describe('presets', () => {
     })
   })
 })
+
+describe('README 与代码不许漂移', () => {
+  /**
+   * The README promises "内置规格：A、B、C…". That sentence is the only place a new user learns what
+   * they can pick, so if a preset is added (or renamed) and the README is not updated, the docs
+   * actively mislead — and nothing else would notice, because the README is not code.
+   *
+   * Asserted BOTH ways: a name in the README that no longer exists sends the user looking for
+   * something absent, and a preset missing from the README is a feature nobody can discover.
+   */
+  const readmePresetNames = ((): string[] => {
+    const text = readFileSync(join(process.cwd(), 'README.md'), 'utf-8')
+    const line = text.split('\n').find((entry) => entry.includes('内置规格')) ?? ''
+    return line
+      .replace(/^.*内置规格：/, '')
+      // 🔴 Strip trailing sentence punctuation ONLY. An earlier version stripped all whitespace,
+      // which turned "OpenCode Go" into "OpenCodeGo" and made this judgement fail against a
+      // perfectly correct README — the extractor was wrong, not the document.
+      .replace(/[。.；;]+$/g, '')
+      .split(/[、,，]/)
+      .map((name) => name.trim())
+      .filter((name) => name !== '')
+  })()
+
+  it('README 列出的每个规格都真实存在', () => {
+    const names = new Set(presetIds().map((id) => CHANNEL_PRESETS[id]?.displayName ?? id))
+    expect(readmePresetNames.length).toBeGreaterThan(0)
+    for (const listed of readmePresetNames) {
+      expect(names.has(listed), `README 写了「${listed}」，但代码里没有这个规格`).toBe(true)
+    }
+  })
+
+  it('代码里的每个规格都在 README 里出现（否则没人能发现它）', () => {
+    for (const id of presetIds()) {
+      const name = CHANNEL_PRESETS[id]?.displayName ?? id
+      expect(readmePresetNames, `规格「${name}」没写进 README`).toContain(name)
+    }
+  })
+})
+
+describe('README 引用的图片真实存在', () => {
+  /**
+   * A missing image renders as a broken box on the npm page — the first thing most visitors see.
+   * `pack-check` guards the packaging side; this guards the repository side, so a wrong path is
+   * caught by `pnpm test` as well.
+   */
+  it('every image the shipped docs reference exists on disk', () => {
+    for (const doc of ['README.md', 'README.en.md', 'CONTRIBUTING.md']) {
+      const path = join(process.cwd(), doc)
+      if (!existsSync(path)) continue
+      const text = readFileSync(path, 'utf-8')
+      for (const match of text.matchAll(/!\[[^\]]*\]\(([^)]+\.(?:png|jpg|svg))\)/g)) {
+        const rel = match[1] as string
+        expect(existsSync(join(process.cwd(), rel)), `${doc} 引用了不存在的图片 ${rel}`).toBe(true)
+      }
+    }
+  })
+})
+

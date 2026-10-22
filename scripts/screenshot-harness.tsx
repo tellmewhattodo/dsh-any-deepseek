@@ -196,6 +196,16 @@ function fail(message: string): void {
   if (root !== null) root.textContent = `HARNESS FAILED: ${message}`
 }
 
+/**
+ * Which state to render.
+ *
+ * `?variant=add` shows a two-channel install with the add form open, so the form fits inside one
+ * viewport — the four-channel list plus the form is 1154px tall, taller than the 813px window.
+ * Two channels is a real state, not a mock-up; the README says so beside the image.
+ */
+const variant = new URLSearchParams(window.location.search).get('variant') ?? 'list'
+const visibleChannels = variant === 'add' ? channels.slice(0, 2) : channels
+
 try {
   const root = createRoot(document.getElementById('root') as HTMLElement)
   root.render(
@@ -203,7 +213,7 @@ try {
       /* The real component's props, faked: this is the entire point of the harness. */
       {...({
         useSettings: (selector: (snapshot: unknown) => unknown) => selector(settingsSnapshot),
-        loadChannels: async () => ({ channels, presets: [], model: { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' } }),
+        loadChannels: async () => ({ channels: visibleChannels, presets: [], model: { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' } }),
         loadStats: async () => stats,
         probe: async () => ({ ok: true, ms: 117, responded: 'deepseek-flash' }),
         loadBalances: async () => ({ channels: balances }),
@@ -217,13 +227,19 @@ try {
    * The balances are only fetched when the user clicks 查询余额 — by design (each call reaches a
    * provider's account surface). For a screenshot the click has to happen, so it is dispatched
    * once the list has painted.
+   *
+   * `variant=add` opens the add form instead, and skips the balance check (that screenshot is
+   * about the form, and a balance row would push the buttons off screen).
    */
   window.setTimeout(() => {
     const buttons = [...document.querySelectorAll('button')]
-    const target = buttons.find((button) => button.textContent?.includes('查询余额'))
-    target?.click()
+    if (variant === 'add') {
+      buttons.find((button) => button.textContent?.includes('添加渠道'))?.click()
+      return
+    }
+    buttons.find((button) => button.textContent?.includes('查询余额'))?.click()
     void byId
-  }, 60)
+  }, 80)
 } catch (cause) {
   fail(cause instanceof Error ? `${cause.message}\n${cause.stack ?? ''}` : String(cause))
 }
