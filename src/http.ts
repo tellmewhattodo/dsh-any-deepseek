@@ -19,7 +19,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { ResolvedChannel } from './channels.js'
-import { PROVIDER_ID } from './adapter.js'
+import { PROVIDER_ID, requestHeadersFor } from './adapter.js'
 import {
   readLedgerRange,
   summarize,
@@ -101,14 +101,22 @@ function queryDate(value: string | null): Date | undefined {
  *
  * This spends tokens, which is why it is an explicit route rather than something the panel does
  * on render. The request asks for one output token, so the cost is a prompt plus a token.
+ *
+ * 🔴 **The headers come from `requestHeadersFor`, the same function the runtime uses.** They used
+ * to be built here separately, which meant this probe sent no OpenCode session header while real
+ * requests did — so "测试" reported 400 `MissingSessionID` on a channel that worked in use. A
+ * probe that does not send what a real request sends is not testing the channel.
  * @param channel - the channel to probe.
  * @param key - its resolved credential.
+ * @param sessionId - session identity for per-request headers (the probe has no conversation of
+ *   its own, so callers pass the selected channel's own stable value).
  * @param signal - cancellation.
  * @returns a verdict and, on success, what the relay reported.
  */
 export async function probeChannel(
   channel: ResolvedChannel,
   key: string,
+  sessionId?: string,
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; ms: number; code?: string; message?: string; responded?: string }> {
   const started = Date.now()
@@ -120,6 +128,7 @@ export async function probeChannel(
         'content-type': 'application/json',
         authorization: `Bearer ${key}`,
         ...channel.headers,
+        ...requestHeadersFor(channel, sessionId),
       },
       body: JSON.stringify({
         model: channel.model,
@@ -293,7 +302,10 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
           json(res, 409, { error: `channel "${id}" has no key configured`, code: 'MISSING_CREDENTIAL' })
           return
         }
-        const verdict = await probeChannel(channel, key)
+        // A probe has no conversation of its own, so it uses the channel's own stable identity:
+        // the same channel always probes under the same affinity key, which is what makes two
+        // consecutive probes comparable.
+        const verdict = await probeChannel(channel, key, `probe:${channel.id}`)
         json(res, verdict.ok ? 200 : 502, verdict)
       },
     },

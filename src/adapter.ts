@@ -51,7 +51,7 @@ import {
 // OpenAI SDK load to the first request, which is why the plugin boots quickly.
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
-import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER } from './presets.js'
+import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
 import type { LedgerEntry } from './usage-ledger.js'
@@ -61,6 +61,53 @@ export const PROVIDER_ID = 'any-deepseek'
 
 /** Display name for the route in provider selectors. */
 export const PROVIDER_NAME = 'Any DeepSeek'
+
+/**
+ * Input modalities this provider's one model accepts.
+ *
+ * 🔴 **Declared at registration, because the harness asks the model — not the channel.**
+ *
+ * `LlmModelInfo.inputModalities` is documented as "absent means unknown" (`dsh-llm/lib/types/
+ * types.d.ts:330-331`), and the host reads it at dispatch to decide whether an image survives
+ * projection at all: `if (modelInfo.inputModalities !== undefined &&
+ * !modelInfo.inputModalities.includes('image') && …) projectImagesForTextModel(…)`
+ * (`dsh-llm/lib/index.js:2337`). Omitting it therefore did not mean "we never send images"; it
+ * meant a user's screenshot was replaced by a placeholder *before* this plugin ever saw it, which
+ * is why the model answered as though the message had been text.
+ *
+ * The value is the MODEL's capability, so it does not depend on which channel is selected, on
+ * whether a key exists, or on whether `current` is set — the same rule as the catalog itself.
+ * A relay that genuinely cannot carry images declares `input: ['text']` on its own channel, and
+ * the transport (`pi-ai`) downgrades the image per channel; the harness-level answer stays the
+ * model's.
+ */
+export const MODEL_INPUT_MODALITIES: readonly ChannelModality[] = V41_FLASH_CAPS.input
+
+/**
+ * The reasoning levels in force for one channel.
+ *
+ * 🔴 **A channel that says nothing inherits the model's table, and that is the whole fix for the
+ * missing thinking control.**
+ *
+ * The old code read `channel.reasoningEfforts` alone. That value only existed once a channel
+ * declared it — so during first-run setup (no channel, or a channel written before the panel
+ * offered levels) the answer was "no reasoning at all", and the composer's strength selector was
+ * absent. But the model always had levels; the CHANNEL was merely silent about them.
+ *
+ * An empty map counts as silence, not as "explicitly unsupported": `z.dict()` produces `{}` when
+ * the panel writes the field, and treating that as a negative capability is how the picker broke
+ * with `INVALID_MODEL_REASONING` in the first place.
+ * @param channel - the selected channel, when there is one.
+ * @returns the levels to advertise and to send, keyed by level name.
+ */
+export function effectiveReasoningEfforts(
+  channel: ResolvedChannel | undefined,
+): Record<string, string | null> {
+  const declared = channel?.reasoningEfforts
+  if (declared !== undefined && Object.keys(declared).length > 0) return declared
+  return V41_FLASH_CAPS.reasoningEfforts
+}
+
 
 /** What the adapter needs from the plugin, so it can be tested without a harness context. */
 export interface AdapterDeps {
@@ -85,15 +132,24 @@ export interface AdapterDeps {
    * seam an image cannot be sent at all. When it is missing, image content is replaced by a text
    * placeholder rather than silently dropped: the model should know an image existed even when it
    * cannot see it.
-   * @param attachmentId - durable id from the message block.
-   * @param mediaType - the block's declared media type.
+   * @param ref - the block's attachment reference, passed through WHOLE.
    * @returns base64 bytes and the media type to put on the wire.
    */
-  readImage?: (attachmentId: string, mediaType: string) => Promise<{ data: string; mediaType: string } | undefined>
+  readImage?: (ref: HarnessImageRef) => Promise<{ data: string; mediaType: string } | undefined>
   /** Clock, injectable so tests are deterministic. */
   now: () => Date
   /** Monotonic-ish millisecond clock for durations. */
   elapsed: () => number
+}
+
+/** A durable image reference as a harness message block carries it. */
+export interface HarnessImageRef {
+  attachmentId: string
+  mediaType: string
+  bytes?: number
+  width?: number
+  height?: number
+  name?: string
 }
 
 /** One finished call, as the adapter observed it. */
@@ -128,6 +184,32 @@ export function opencodeSessionId(sessionId: unknown): string {
 }
 
 /**
+ * Build the per-request headers one channel needs.
+ *
+ * 🔴 **Shared by BOTH paths that talk to a relay** — the runtime `stream()` and the panel's
+ * `/probe`. They used to differ: `stream()` injected the OpenCode session header and `/probe`
+ * did not, so "测试" reported 400 `MissingSessionID` for a channel that worked in real use. A
+ * probe that checks something other than what a real request does is not a probe; it is a second
+ * implementation of the truth, and the two will disagree.
+ * @param channel - the resolved channel.
+ * @param sessionId - the harness session id, when the caller has one.
+ * @returns headers to send, on top of whatever the channel already declares.
+ */
+export function requestHeadersFor(channel: ResolvedChannel, sessionId: unknown): Record<string, string> {
+  const headers: Record<string, string> = {}
+  // The `x-opencode-client` header is this plugin's marker for "this is an OpenCode endpoint".
+  // Keying off it (rather than the channel id or the base URL) keeps the rule in one place: the
+  // preset that declares the endpoint is the preset that declares its requirements.
+  if (channel.headers !== undefined && Object.hasOwn(channel.headers, 'x-opencode-client')) {
+    const session = opencodeSessionId(sessionId)
+    headers[OPENCODE_SESSION_HEADER] = session
+    headers['X-Session-ID'] = session
+    headers['User-Agent'] = CLIENT_USER_AGENT
+  }
+  return headers
+}
+
+/**
  * Build the pi-ai model entry for one channel.
  *
  * The advertised id (`deepseek-v4.1-flash`) never reaches the wire here: each channel's own
@@ -146,12 +228,20 @@ export function buildPiModel(channel: ResolvedChannel): Model<Api> {
   //
   // Only levels with a real wire value are passed: `null` means "explicitly unsupported", and
   // declaring a level unsupported is a stronger claim than simply not offering it.
-  const thinkingLevelMap = channel.reasoningEfforts === undefined
-    ? undefined
-    : Object.fromEntries(
-      Object.entries(channel.reasoningEfforts).filter(([, value]) => value !== null),
-    )
-  const hasThinking = thinkingLevelMap !== undefined && Object.keys(thinkingLevelMap).length > 0
+  //
+  // 🔴 The table is resolved through {@link effectiveReasoningEfforts}, the same function
+  // `resolveModel()` uses. Two readers of "which levels exist" (the picker and the wire) that
+  // resolve it differently would let a user pick a level the request then drops — the picker
+  // would be showing a control that does nothing, which is exactly the class of silent failure
+  // this file keeps documenting.
+  const thinkingLevelMap = ((): Record<string, string> | undefined => {
+    const declared: Record<string, string> = {}
+    for (const [level, wire] of Object.entries(effectiveReasoningEfforts(channel))) {
+      if (typeof wire === 'string') declared[level] = wire
+    }
+    return Object.keys(declared).length === 0 ? undefined : declared
+  })()
+  const hasThinking = thinkingLevelMap !== undefined
 
   return {
     id: channel.model,
@@ -196,25 +286,28 @@ export async function collectImages(
 ): Promise<ImageBytes> {
   const images: ImageBytes = new Map()
   if (readImage === undefined) return images
-  const pending: Array<{ id: string; mediaType: string }> = []
+  const pending: HarnessImageRef[] = []
   for (const message of options.messages) {
     if (!Array.isArray(message.content)) continue
     for (const block of message.content) {
-      const candidate = block as { type?: string; attachment?: { attachmentId?: string; mediaType?: string } }
+      const candidate = block as { type?: string; attachment?: HarnessImageRef }
       if (candidate.type !== 'image') continue
-      const id = candidate.attachment?.attachmentId
-      const mediaType = candidate.attachment?.mediaType
-      if (typeof id !== 'string' || typeof mediaType !== 'string') continue
-      if (images.has(id)) continue
-      pending.push({ id, mediaType })
+      const ref = candidate.attachment
+      if (ref === undefined || typeof ref.attachmentId !== 'string') continue
+      if (images.has(ref.attachmentId)) continue
+      if (pending.some((item) => item.attachmentId === ref.attachmentId)) continue
+      // 🔴 The reference is passed through WHOLE, not reduced to id+mediaType. The store's
+      // `readImageRequest` takes an `ImageAttachmentRef`, and a partial one is not a valid
+      // reference — the failure mode is a rejected read, i.e. an image the model cannot see.
+      pending.push(ref)
     }
   }
-  const resolved = await Promise.all(pending.map(async (item) => {
+  const resolved = await Promise.all(pending.map(async (ref) => {
     try {
-      return [item.id, await readImage(item.id, item.mediaType)] as const
+      return [ref.attachmentId, await readImage(ref)] as const
     } catch {
       // A failed read is a missing image, not a failed request: the placeholder path covers it.
-      return [item.id, undefined] as const
+      return [ref.attachmentId, undefined] as const
     }
   }))
   for (const [id, value] of resolved) if (value !== undefined) images.set(id, value)
@@ -602,6 +695,9 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
    * ⇒ The catalog answers "what does this provider serve", which is a property of the plugin.
    * Key presence is answered per request (`MISSING_CREDENTIAL`) and per row in the panel
    * (`keyConfigured`), where the user can actually act on it.
+   *
+   * The same reasoning extends to `inputModalities`: it describes the model this route serves,
+   * so it is reported here unconditionally rather than derived from a channel.
    */
   override async listModels(_provider: string): Promise<LlmModelInfo[]> {
     const selected = this.selected()
@@ -614,6 +710,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       // Naming the route is useful when one exists; with no channel configured the honest
       // description says so instead of inventing a relay.
       description: label === undefined ? 'no channel configured yet' : `via ${label}`,
+      // 🔴 Declared here as well as in `resolveModel`. Both are read by different host paths —
+      // the catalog builds the picker from `listModels()`, and dispatch reads the model info
+      // resolved per call — so omitting it from either half makes the two answers disagree about
+      // whether this model can see images.
+      inputModalities: [...MODEL_INPUT_MODALITIES],
     }]
   }
 
@@ -634,7 +735,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     // A level mapped to `null` means "explicitly unsupported on this relay", so it is filtered
     // out of the PICKER as well — offering a level the wire will refuse is the same class of
     // mistake as hiding one the wire accepts.
-    const efforts = Object.entries(channel?.reasoningEfforts ?? {})
+    //
+    // 🔴 The levels come from {@link effectiveReasoningEfforts}, NOT from the channel alone: a
+    // channel that declares none inherits the model's table, so the thinking control exists from
+    // first-run setup instead of appearing only after someone hand-declares a map.
+    const efforts = Object.entries(effectiveReasoningEfforts(channel))
       .filter(([, wire]) => wire !== null)
       .map(([id]) => id)
     const reasoning = efforts.length === 0
@@ -647,6 +752,7 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       description: channel === undefined ? undefined : `via ${channel.label}`,
       context: { contextWindow: channel?.contextWindow ?? 1_000_000 },
       defaultMaxTokens: channel?.maxTokens,
+      inputModalities: [...MODEL_INPUT_MODALITIES],
       ...reasoning,
     }
   }
@@ -749,17 +855,10 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
      *    for the same conversation, which is all the endpoint's affinity key needs.
      *  · `User-Agent` must identify THIS client rather than the generic SDK. pi-ai sets its own,
      *    so the preset's static headers alone can never satisfy that rule.
+     *
+     * The construction lives in `requestHeadersFor` so the panel's probe sends the same thing.
      */
-    const requestHeaders: Record<string, string> = {}
-    // The `x-opencode-client` header is this plugin's marker for "this is an OpenCode endpoint".
-    // Keying off it (rather than the channel id or the base URL) keeps the rule in one place: the
-    // preset that declares the endpoint is the preset that declares its requirements.
-    if (channel.headers !== undefined && Object.hasOwn(channel.headers, 'x-opencode-client')) {
-      const session = opencodeSessionId(options.sessionId)
-      requestHeaders[OPENCODE_SESSION_HEADER] = session
-      requestHeaders['X-Session-ID'] = session
-      requestHeaders['User-Agent'] = CLIENT_USER_AGENT
-    }
+    const requestHeaders = requestHeadersFor(channel, options.sessionId)
 
     const streamOptions: SimpleStreamOptions = {
       apiKey: key,

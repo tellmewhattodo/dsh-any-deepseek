@@ -101,8 +101,15 @@ export const DEFAULT_MAX_TOKENS = 32_768
  * images" — it meant the user's image never reached the model at all, silently. The relay side is
  * now real: `adapter.ts` collects image bytes through the durable attachment store and maps them
  * to pi-ai `image` content, and falls back to a visible text placeholder when it cannot.
+ *
+ * ## Why this is exported
+ *
+ * The adapter must report the SAME capabilities through `listModels()` / `resolveModel()`, which
+ * describe the advertised model rather than any one channel. Reaching for this constant (instead
+ * of re-listing the numbers there) keeps the catalog and the exact-model answer from drifting —
+ * and they are read by different host paths, so a drift is silent.
  */
-const V41_FLASH_CAPS = {
+export const V41_FLASH_CAPS = {
   contextWindow: 1_000_000,
   maxTokens: 384_000,
   input: ['text', 'image'] as ChannelModality[],

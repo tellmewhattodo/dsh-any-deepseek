@@ -73,7 +73,6 @@ describe('buildPiModel', () => {
     const model = buildPiModel(channel({ model: 'deepseek/deepseek-v4.1-flash' }))
     expect(model.id).toBe('deepseek/deepseek-v4.1-flash')
   })
-
   it('carries the endpoint and capacities so no catalog lookup is needed', () => {
     const model = buildPiModel(channel())
     expect(model.baseUrl).toBe('https://relay.example/v1')
@@ -81,10 +80,20 @@ describe('buildPiModel', () => {
     expect(model.maxTokens).toBe(384_000)
   })
 
-  it('marks a model with reasoning levels as reasoning-capable and one without as not', () => {
+  it('🔴 is reasoning-capable even when the channel declares NO levels', () => {
+    // 🔴 The old rule was "no declared levels ⇒ not a reasoning model", and it did not describe
+    // the model — it described one channel's configuration. The consequence was measurable on a
+    // real host: with no channel (first-run setup) the composer's thinking-strength control was
+    // simply absent, because pi-ai drops `reasoningEffort` entirely for a model whose
+    // `reasoning` is false (`openai-completions.js:623-725` gates every thinking branch on it).
+    // Capability is the MODEL's, so a silent channel inherits the model's table.
+    expect(buildPiModel(channel()).reasoning).toBe(true)
+    // An empty map is silence (what `z.dict()` writes), not a negative declaration.
+    expect(buildPiModel(channel({ reasoningEfforts: {} })).reasoning).toBe(true)
+    // A channel that really does declare levels keeps exactly its own set.
     expect(buildPiModel(channel({ reasoningEfforts: { low: 'low' } })).reasoning).toBe(true)
-    expect(buildPiModel(channel({ reasoningEfforts: {} })).reasoning).toBe(false)
-    expect(buildPiModel(channel()).reasoning).toBe(false)
+    // …and one that declares nothing usable is the only case that turns the feature off.
+    expect(buildPiModel(channel({ reasoningEfforts: { off: null } })).reasoning).toBe(false)
   })
 
   it('copies headers rather than sharing the array reference', () => {
@@ -268,23 +277,63 @@ describe('resolveModel — reasoning metadata', () => {
     expect(info.reasoning?.efforts.map((effort) => String(effort.id))).toEqual(['low', 'high'])
   })
 
-  it('omits reasoning entirely when the channel declares none', async () => {
+  it('🔴 advertises the model\'s levels when the channel declares none', async () => {
+    // Owner's report, verbatim: "右下角思考强度还是不能改". The levels were always the model's; only
+    // a channel's silence made them disappear — most visibly during first-run setup, which is
+    // exactly when the user goes looking for the control.
     const info = await adapterWith([channel()]).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
-    expect(info.reasoning).toBeUndefined()
+    expect(info.reasoning?.efforts.map((effort) => String(effort.id)).sort())
+      .toEqual(['high', 'low', 'max', 'medium'])
   })
 
-  it('🔴 omits reasoning when the declared map is present but EMPTY', async () => {
-    // Regression guard for "非法的 reasoning metadata". The host throws
-    // `INVALID_MODEL_REASONING` when `reasoning.efforts.length === 0` (dsh-llm:2144), and an
-    // empty `z.dict()` value — `{}` — is exactly what the settings form can store. The old guard
-    // only checked `=== undefined`, so `{}` produced `efforts: []` and broke the model picker.
+  it('🔴 advertises the model\'s levels when the declared map is present but EMPTY', async () => {
+    // An empty `z.dict()` value is silence, not a claim that the model cannot think.
     const info = await adapterWith([channel({ reasoningEfforts: {} })]).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
-    expect(info.reasoning).toBeUndefined()
+    expect(info.reasoning?.efforts.length).toBe(4)
   })
 
-  it('🔴 omits reasoning when NO channel is selected', async () => {
+  it('🔴 advertises the model\'s levels when NO channel is selected', async () => {
+    // The catalog must not depend on runtime configuration (decision 26, same direction).
     const info = await adapterWith([], undefined).resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+    expect(info.reasoning?.efforts.length).toBe(4)
+  })
+
+  it('🔴 never sends `efforts: []` — the host treats that as malformed', async () => {
+    // The one reachable empty state after the fallback exists: a channel that declares levels and
+    // maps every one of them to null ("this relay supports none of them"). The host throws
+    // `INVALID_MODEL_REASONING` for `efforts.length === 0` (`dsh-llm/lib/index.js:2144`), and the
+    // whole model picker fails to load with "非法的 reasoning metadata".
+    const info = await adapterWith([channel({ reasoningEfforts: { off: null, low: null } })])
+      .resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
     expect(info.reasoning).toBeUndefined()
+  })
+})
+
+describe('resolveModel — input modalities', () => {
+  const adapterWith = (channels: ResolvedChannel[], current: string | undefined = 'go'): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
+    channels: () => channels,
+    current: () => current,
+    resolveKey: async () => 'sk-test',
+    record: async () => undefined,
+    now: () => new Date(0),
+    elapsed: () => 0,
+  })
+
+  it('🔴 declares image input, with and without a channel', async () => {
+    // 🔴 The host only keeps an image in a request when this says the model accepts one:
+    // `if (modelInfo.inputModalities !== undefined && !…includes('image') && …) {
+    //    projectedMessages = projectImagesForTextModel(…) }` (`dsh-llm/lib/index.js:2337`).
+    // Absent means UNKNOWN, and the old code never sent it — so a user's screenshot was replaced
+    // by a text placeholder before this plugin was ever called.
+    for (const adapter of [adapterWith([channel()]), adapterWith([], undefined)]) {
+      const info = await adapter.resolveModel(PROVIDER_ID, ADVERTISED_MODEL_ID)
+      expect([...(info.inputModalities ?? [])]).toEqual(['text', 'image'])
+    }
+  })
+
+  it('is declared by the catalog too — the picker and dispatch must agree', async () => {
+    const models = await adapterWith([channel()]).listModels(PROVIDER_ID)
+    expect([...(models[0]?.inputModalities ?? [])]).toEqual(['text', 'image'])
   })
 })
 
@@ -365,7 +414,18 @@ describe('image input', () => {
   it('collects bytes for every image through the attachment seam', async () => {
     const readImage = vi.fn(async () => ({ data: 'QUJD', mediaType: 'image/png' }))
     const images = await collectImages(imageRequest() as never, readImage)
-    expect(readImage).toHaveBeenCalledWith('att-1', 'image/png')
+    // 🔴 The WHOLE reference is handed over, not `(id, mediaType)`. The store's
+    // `readImageRequest` takes an `ImageAttachmentRef`, and a reduced one is not a valid input —
+    // its rejection reads downstream as "this image could not be read", i.e. a model that cannot
+    // see images. That was the first version of this code and it took a real screenshot to find.
+    expect(readImage).toHaveBeenCalledWith({
+      attachmentId: 'att-1',
+      mediaType: 'image/png',
+      bytes: 10,
+      width: 4,
+      height: 4,
+      name: 'shot.png',
+    })
     expect(images.get('att-1')).toEqual({ data: 'QUJD', mediaType: 'image/png' })
   })
 

@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } from './config.js'
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { allChannels, resolveChannels } from './channels.js'
-import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME } from './adapter.js'
+import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME, type HarnessImageRef } from './adapter.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
 import { registerStatsRoutes, type WebServerLike } from './http.js'
 
@@ -176,27 +176,39 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
    * 2048px keeps the harness's normal form, and the byte ceiling is the one the host's pi-ai
    * adapter uses for the same purpose.
    */
-  const readImage = async (attachmentId: string, mediaType: string): Promise<{ data: string; mediaType: string } | undefined> => {
+  const readImage = async (ref: HarnessImageRef): Promise<{ data: string; mediaType: string } | undefined> => {
     const attachments = service<{
       readImageRequest?: (
-        ref: { attachmentId: string; mediaType: string },
+        ref: HarnessImageRef,
         target: { width: number; height: number; maxBytes: number },
       ) => Promise<{ data: Uint8Array; mediaType: string }>
     }>(ctx, 'attachments')
-    if (attachments?.readImageRequest === undefined) return undefined
+    if (attachments?.readImageRequest === undefined) {
+      // Say WHY instead of returning a silent undefined: a missing attachment service is a
+      // composition fact an operator can act on.
+      console.warn('[any-deepseek] 图片无法读取：本组合没有装配 attachments 服务（readImageRequest 不可用）')
+      return undefined
+    }
     try {
+      // 🔴 The WHOLE reference goes in. `readImageRequest` takes an `ImageAttachmentRef`, so a
+      // stripped-down `{attachmentId, mediaType}` is not a valid input — and the resulting reject
+      // reads downstream as "this image could not be read", i.e. a model that cannot see images.
+      // (That is exactly how the first version of this code failed.)
       const stored = await attachments.readImageRequest(
-        { attachmentId, mediaType },
+        ref,
         { width: 2048, height: 2048, maxBytes: 4 * 1024 * 1024 },
       )
-      if (stored?.data === undefined) return undefined
+      if (stored?.data === undefined) {
+        console.warn(`[any-deepseek] 图片 ${ref.attachmentId} 读取结果为空`)
+        return undefined
+      }
       return {
         data: Buffer.from(stored.data).toString('base64'),
-        mediaType: stored.mediaType ?? mediaType,
+        mediaType: stored.mediaType ?? ref.mediaType,
       }
     } catch (error) {
       // A read failure degrades to the text placeholder; it must never fail the request.
-      console.warn(`[any-deepseek] 读不到图片 ${attachmentId}: ${error instanceof Error ? error.message : String(error)}`)
+      console.warn(`[any-deepseek] 读不到图片 ${ref.attachmentId}: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     }
   }
