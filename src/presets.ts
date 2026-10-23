@@ -292,10 +292,61 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     // will say "no balance API" rather than guess at a shape and report a wrong number; it then
     // falls back to one minimal live request, so the row still answers "is this account usable".
   },
+  /**
+   * Tencent Cloud's TokenHub — a first-party forwarding endpoint for DeepSeek.
+   *
+   * Owner request (2026-10-23): 「我本机dsh还配了tokenhub这个渠道，这个渠道是腾讯云的渠道，
+   * 它的模型名称是固定的0605后缀就是向官方的转发」.
+   *
+   * 🔴 **The model id is frozen at `deepseek-v4-flash-202605` — the `-202605` suffix is part of the
+   * id, not a date we append.** This is the sharpest illustration of why presets exist: the same
+   * model is `deepseek-v4.1-flash` on the relays, `deepseek-flash` on the official API, and
+   * `deepseek-v4-flash-202605` here. Getting it wrong does not fail locally — the upstream
+   * rejects it on the first request.
+   *
+   * Endpoint and model id verified against TWO independent records in this container (the
+   * 2026-10-15 model-aggregator survey and the 2026-10-19 research note), and against the live
+   * `/v1/models` route (401 = present, auth required).
+   */
+  'tencent-tokenhub': {
+    displayName: 'Tencent TokenHub',
+    api: 'openai-completions',
+    baseURL: 'https://tokenhub.tencentmaas.com/v1/',
+    // 🔴 Frozen id with a `-202605` suffix. Do not "normalise" it to the relays' spelling.
+    model: 'deepseek-v4-flash-202605',
+    contextWindow: 1_024_000,
+    maxTokens: 384_000,
+    // 🔴 text-only, per the owner's own live profile (`input: [text]`). Nothing measured says it
+    // takes images, and declaring an unverified capability would be the same class of error as the
+    // "Probed live" comment this repo had to retract.
+    input: ['text'],
+    // The thinking-level table and DeepSeek's thinking dialect DO carry over: this endpoint is a
+    // first-party forward of DeepSeek's own model, so the wire spellings are the same family's.
+    reasoningEfforts: { ...V41_FLASH_CAPS.reasoningEfforts },
+    compat: { ...DEEPSEEK_THINKING_COMPAT },
+    /**
+     * 🔴 **No balance surface — measured by status-code discrimination, not assumed.**
+     *
+     * Without a key, the inference route answers **401** while a made-up path answers **404**,
+     * so 401 here means "route exists, auth required". Four balance candidates were then probed
+     * at the same prefix and ALL answered 404, i.e. they do not exist:
+     *   /v1/dashboard/billing/subscription   404
+     *   /v1/user/balance                     404
+     *   /v1/credits                          404
+     *
+     * ⇒ No `balance` is declared. The panel therefore reports "no balance API" and falls back to
+     * ONE minimal live request (`http.ts` `balanceRow`), showing 「余额未尽」 with the serving
+     * model and round-trip time — exactly what the owner asked for (「余额查询是没有的做成测通
+     * 查询即可」). Declaring a speculative `openai-billing` shape would have produced a 404 on
+     * every check, which is the mistake this repo already made once and recorded.
+     */
+    note: 'Tencent Cloud forwarding endpoint; model id is frozen with a -202605 suffix. '
+      + 'Text-only, per the endpoint record. '
+      + 'No balance API — the panel verifies liveness instead.',
+  },
   ollama: {
     displayName: 'Ollama Cloud',
-    api: 'openai-completions',
-    baseURL: 'https://ollama.com/v1',
+    api: 'openai-completions',    baseURL: 'https://ollama.com/v1',
     model: 'deepseek-v4.1-flash',
     ...V41_FLASH_CAPS,
     // 🔴 `/api/balance`, not `/v1/balance`: Ollama's inference lives under `/v1` but its account

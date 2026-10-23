@@ -56,7 +56,7 @@ dsh plugin --profile web add dsh-any-deepseek
 **渠道 id** 会自动填好（可以改，只是配置里的键名）。**显示名**留空的话用规格的默认名 ——
 同一家开两个号时，填上「主号」「备号」之类会好认。
 
-内置规格：DeepSeek Official、OpenCode Go、Ollama Cloud、Open Design、CommandCode
+内置规格：DeepSeek Official、OpenCode Go、Ollama Cloud、Open Design、CommandCode、Tencent TokenHub
 （这些名字与下拉框里显示的完全一致）。
 要接别家，见 [接一个新渠道](#接一个新渠道)。
 
@@ -94,6 +94,9 @@ dsh plugin --profile web add dsh-any-deepseek
 
 > **「余额未尽」不等于「还剩多少」。** 一次成功的请求只证明三件事：地址通、key 对、账户没因为欠费被拒
 > （欠费的账户会回 402，不会回 200）。所以这里只写「未尽」，**不会编一个金额给你**。
+
+**哪些内置规格没有余额接口？** 目前是 **Open Design** 和 **Tencent TokenHub** ——
+这两家只开推理面，所以它们永远显示「余额未尽」而不是金额。这是如实报告，不是缺陷。
 
 ### 看这个月花了多少
 

@@ -9,6 +9,7 @@ import {
   presetById,
   presetIds,
 } from '../src/presets.js'
+import { probeUrlsFor } from '../src/balance.js'
 
 describe('presets', () => {
   it('advertises exactly one model id', () => {
@@ -69,7 +70,19 @@ describe('presets', () => {
     // the declaration here, the delivery path in the adapter tests. Declaring without delivering
     // was a measured failure — a screenshot reached the plugin and the model answered as though
     // the message had been text only.
+    //
+    // 🔴 EXCEPT where the endpoint's own record says text-only. `tencent-tokenhub` is that case:
+    // the owner's live profile declares `input: [text]` for it, and nothing measured contradicts
+    // that. Claiming `image` there would be an unverified capability — the same class of error as
+    // the fabricated "Probed live" comment. So the rule is "declare it unless the record says
+    // otherwise, and if it says otherwise, say so in the preset's note".
+    const textOnlyByRecord = new Set(['tencent-tokenhub'])
     for (const [id, preset] of Object.entries(CHANNEL_PRESETS)) {
+      if (textOnlyByRecord.has(id)) {
+        expect(preset.input, `${id} 按记录是纯文本，且必须在 note 里写明`).not.toContain('image')
+        expect(preset.note ?? '', `${id} 必须在 note 里说明为什么不是 text+image`).toMatch(/text/i)
+        continue
+      }
       expect(preset.input, id).toContain('image')
     }
   })
@@ -147,6 +160,51 @@ describe('presets', () => {
       expect(CHANNEL_PRESETS.ollama?.balance?.baseURL).toBe('https://ollama.com')
       expect(CHANNEL_PRESETS.ollama?.baseURL).toBe('https://ollama.com/v1')
     })
+  })
+})
+
+describe('Tencent TokenHub — 固定 0605 后缀，且没有余额接口', () => {
+  /**
+   * Owner request (2026-10-23): 「我本机dsh还配了tokenhub这个渠道，这个渠道是腾讯云的渠道，
+   * 它的模型名称是固定的0605后缀就是向官方的转发… 余额查询是没有的做成测通查询即可」.
+   *
+   * 🔴 The `-202605` suffix is the single most breakable fact here: it is part of the model id, and
+   * "helpfully" normalising it to the relays' `deepseek-v4.1-flash` fails only on the first real
+   * request. This is exactly the class of bug the preset table exists to absorb.
+   */
+  const preset = CHANNEL_PRESETS['tencent-tokenhub']
+
+  it('🔴 keeps the FROZEN -202605 model id verbatim', () => {
+    expect(preset?.model).toBe('deepseek-v4-flash-202605')
+    // The relays' spelling must not leak in here.
+    expect(preset?.model).not.toBe('deepseek-v4.1-flash')
+  })
+
+  it('points at the Tencent Cloud endpoint, with the trailing slash the record shows', () => {
+    expect(preset?.baseURL).toBe('https://tokenhub.tencentmaas.com/v1/')
+  })
+
+  it('🔴 declares NO balance probe — four candidates were probed and all answered 404', () => {
+    // Measured without a key at the same prefix: `/v1/models` answers 401 (route exists) while a
+    // made-up path answers 404. Then `/v1/dashboard/billing/subscription`, `/v1/user/balance` and
+    // `/v1/credits` each answered 404 ⇒ inference-only.
+    //
+    // Declaring a speculative `openai-billing` shape would make every check a 404, which is the
+    // mistake this repo made once already (and recorded in the open-design entry).
+    expect(preset?.balance).toBeUndefined()
+    // `probeUrlsFor` must therefore return nothing → `balanceRow` falls back to liveness.
+    expect(probeUrlsFor(preset?.balance, preset?.baseURL ?? '')).toEqual([])
+  })
+
+  it('declares the 1M context / 384K output the owner’s own config records', () => {
+    // Taken from the live profile (`llm-pi-ai.providers.zy-tecenthub`), not invented.
+    expect(preset?.contextWindow).toBe(1_024_000)
+    expect(preset?.maxTokens).toBe(384_000)
+  })
+
+  it('is listed in the README (otherwise nobody can discover it)', () => {
+    const text = readFileSync(join(process.cwd(), 'README.md'), 'utf-8')
+    expect(text).toContain('Tencent TokenHub')
   })
 })
 
