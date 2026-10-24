@@ -492,26 +492,19 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                         <span className="ad-warn" title={row.warnings.join('\n')}>⚠</span>
                       )}
                       {/*
-                        Renaming lives next to the name it changes.
+                        🔴 改名 MOVED OUT of this line (owner 2026-10-25: 「改名这个按钮实现的
+                        很突兀」).
 
-                        Two accounts on the same relay differ only by their label, so the label has
-                        to be editable — and editable where it is read, not behind a separate
-                        screen. The row is a radio label, so this button stops the click from
-                        propagating; otherwise renaming would also select the channel.
+                        The complaint was about placement, not about the feature. It sat here with
+                        `margin-left: auto`, which pushed it to the far right of the TEXT column —
+                        so it floated in the middle of the row, visually detached from both the name
+                        it edits and the 测试/移除 buttons it is a peer of. A control that acts on
+                        the channel belongs with the other channel actions.
+
+                        It now lives in `.ad-rowActions`, first in the group, so every row reads
+                        right-to-left as: 移除 · 测试 · 更换密钥 · 改名. See that block for the note
+                        on why it is FIRST there (it is the one action a two-account setup uses).
                       */}
-                      <button
-                        type="button"
-                        className="ad-link ad-renameBtn"
-                        title="改显示名（渠道 id 不变）"
-                        onClick={(event) => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          setRenaming(renaming === row.id ? null : row.id)
-                          setRenameDraft(renaming === row.id ? '' : row.label)
-                        }}
-                      >
-                        {renaming === row.id ? '取消' : '改名'}
-                      </button>
                     </span>
                     {renaming === row.id && (
                       <span className="ad-keyForm">
@@ -541,91 +534,53 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                       </span>
                     )}
                     {/*
-                      🔴 ONE detail line, not four (owner request 2026-10-24:
-                      「每个渠道高度希望小一些，紧凑些」).
+                      🔴 The detail line is GONE (owner request 2026-10-25: 「这部分不要了」,
+                      pointing at the whole 模型·协议·地址 + 密钥态 row).
 
-                      The row previously stacked 模型·协议·地址 / 密钥态 / 余额 / 探测结果 as
-                      separate lines — four lines of secondary fact under one line of name. With
-                      five channels that spent most of the panel on whitespace.
+                      What it carried was: model id · api · baseURL · key state · probe verdict ·
+                      balance. Removing it as-is would have removed the ONLY way to change a key,
+                      so that one control moved into the action group on the right (更换密钥) and
+                      the probe verdict / balance moved beside the name — both are live state about
+                      THIS channel, which is what the title line is for.
 
-                      Nothing was removed to fix it: every one of those facts is still rendered,
-                      but they now share one wrapping line. Order is by importance to a reader
-                      scanning for "why isn't this working": the endpoint identity first, then the
-                      key state, then the live verdict, then the balance.
+                      What is genuinely gone: model / api / baseURL. Justification, not laziness —
+                      all six presets serve the same model through the same provider, so the id is
+                      constant text on every row, and api+baseURL are fixed by the preset the user
+                      picked from a dropdown. They are still one fetch away at `/any-deepseek/channels`
+                      for anyone debugging, but they earned no permanent line in a list whose job is
+                      "which relay is live".
+
+                      🔴 The probe verdict and the balance are NOT cosmetic and did not get deleted:
+                      they are the answer to "is this channel actually working", which is the second
+                      question this list answers.
                     */}
-                    <span className="ad-rowDetail">
-                      <span className="ad-mono" title="上游模型 id">{row.model}</span>
-                      <span className="ad-sep">·</span>
-                      <span title="接口协议">{row.api}</span>
-                      <span className="ad-sep">·</span>
-                      <span className="ad-mono" title="端点地址">{row.baseURL}</span>
-                      {probeResult !== undefined && (
-                        <span className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
-                          {probeResult.ok
-                            ? `通（${probeResult.ms}ms）`
-                            : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
-                        </span>
-                      )}
-                      {/*
-                        Key state is shown as a fact, with the fix one step away: an unconfigured
-                        channel offers the input inline rather than sending the user off to another
-                        screen. `keyConfigured` is the host's own answer (it never returns the value).
+                    {(probeResult !== undefined || balances[row.id] !== undefined) && (
+                      <span className="ad-rowDetail">
+                        {probeResult !== undefined && (
+                          <span className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
+                            {probeResult.ok
+                              ? `通（${probeResult.ms}ms）`
+                              : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
+                          </span>
+                        )}
+                        {/*
+                          Remaining balance, when this endpoint exposes one.
 
-                        🔴 `keyRefValid === false` is a DIFFERENT state from "no key yet": the entry
-                        has something that is not a credential name in the name field (in practice
-                        a key pasted into it). Calling that "未配置" would be true but useless — the
-                        user's next action is not "add a key", it is "fix the slot", which the panel
-                        now does for them when they save one.
-                      */}
-                      {row.keyConfigured ? (
-                        <span className="ad-keyLine">
-                          <span className="ad-keyOn">密钥已配置</span>
-                          {row.keyKind === 'reference' && (
-                            <code className="ad-mono ad-keyName">{row.keyRef}</code>
-                          )}
-                          <button
-                            type="button"
-                            className="ad-link"
-                            onClick={(event) => {
-                              event.preventDefault()
-                              setKeying(keying === row.id ? null : row.id)
-                            }}
-                          >
-                            {keying === row.id ? '取消' : '更换'}
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="ad-keyLine">
-                          <span className="ad-keyOff">未配置密钥</span>
-                          <button
-                            type="button"
-                            className="ad-link"
-                            onClick={(event) => {
-                              event.preventDefault()
-                              setKeying(keying === row.id ? null : row.id)
-                            }}
-                          >
-                            {keying === row.id ? '取消' : '填写密钥'}
-                          </button>
-                        </span>
-                      )}
-                      {/*
-                        Remaining balance, when this endpoint exposes one.
+                          🔴 Four different silences, kept distinct: `undefined` = not fetched yet
+                          (nothing shown), `unsupported` = no balance API and no liveness check ran,
+                          `alive` = no balance API but a minimal live request SUCCEEDED ⇒ the account
+                          still has credit (no amount is claimed), `unavailable` = it was tried and did
+                          not answer. None of them is rendered as a number, because "0.00" would read
+                          as "you are out of credit".
 
-                        🔴 Four different silences, kept distinct: `undefined` = not fetched yet
-                        (nothing shown), `unsupported` = no balance API and no liveness check ran,
-                        `alive` = no balance API but a minimal live request SUCCEEDED ⇒ the account
-                        still has credit (no amount is claimed), `unavailable` = it was tried and did
-                        not answer. None of them is rendered as a number, because "0.00" would read
-                        as "you are out of credit".
-
-                        Fetched on demand via the 查询余额 button — not on mount — so opening the panel
-                        to rename something does not fan out a request to every relay.
-                      */}
-                      {balances[row.id] !== undefined && (
-                        <span className="ad-balance">{formatBalance(balances[row.id] as BalanceRow)}</span>
-                      )}
-                    </span>
+                          Fetched on demand via the 查询余额 button — not on mount — so opening the panel
+                          to rename something does not fan out a request to every relay.
+                        */}
+                        {balances[row.id] !== undefined && (
+                          <span className="ad-balance">{formatBalance(balances[row.id] as BalanceRow)}</span>
+                        )}
+                      </span>
+                    )}
                     {keying === row.id && (
                       <span className="ad-keyForm">
                         <input
@@ -648,7 +603,42 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     )}
                   </span>
                 </label>
+                {/*
+                  Every control that ACTS ON this channel, in one place (owner 2026-10-25:
+                  「改名这个按钮实现的很突兀」).
+
+                  🔴 Why this fixes that complaint rather than just moving pixels: the offending
+                  button sat inside the text column with `margin-left: auto`, so it was pushed to
+                  that column's far right — floating in mid-row, belonging neither to the name it
+                  edits nor to the buttons it resembles. Grouping all channel actions here makes
+                  the row read as "what it is (left) | what you can do to it (right)".
+
+                  Order is by how often a real setup reaches for it:
+                    改名    — the reason two accounts on one relay are distinguishable at all
+                    更换密钥 — key rotated, or a channel that never had one
+                    测试    — costs a real request, so it is not first
+                    移除    — destructive, so it is last
+                */}
                 <div className="ad-rowActions">
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn-quiet"
+                    title="改显示名（渠道 id 不变）"
+                    onClick={() => {
+                      setRenaming(renaming === row.id ? null : row.id)
+                      setRenameDraft(renaming === row.id ? '' : row.label)
+                    }}
+                  >
+                    {renaming === row.id ? '取消' : '改名'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn-quiet"
+                    title={row.keyConfigured ? '更换这个渠道的密钥' : '为这个渠道填写密钥'}
+                    onClick={() => setKeying(keying === row.id ? null : row.id)}
+                  >
+                    {keying === row.id ? '取消' : '更换密钥'}
+                  </button>
                   <button
                     type="button"
                     className="ad-btn ad-btn-quiet"

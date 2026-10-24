@@ -297,6 +297,57 @@ describe('what the owner reported, pinned as assertions', () => {
     expect(row.slice(0, row.indexOf('}'))).toContain('border-left: 3px solid transparent')
   })
 
+  it('🔴 the active channel is GREEN, and every mark reads from one token', () => {
+    /*
+     * Owner 2026-10-25: 「激活的样式用绿色」.
+     *
+     * The prior marks were all derived from `currentColor` — a neutral bar, a stronger border, a
+     * grey tint. They were technically distinguishable and practically invisible: the live row
+     * looked like any hovered row.
+     *
+     * 🔴 What makes this assertion worth having is not "is it green" (a colour is trivially
+     * changeable) but "can the marks DRIFT apart". Four separate rules apply the colour — border,
+     * left bar, fill, badge — and if one of them keeps `currentColor` while others go green, the
+     * row is half-recoloured and looks broken. So: the token must exist, and every mark must read
+     * FROM it rather than from `currentColor`.
+     */
+    const css = readFileSync(join(process.cwd(), 'src', 'client', 'SettingsPage.css'), 'utf-8')
+    expect(css).toContain('--ad-active:')
+    const current = css.slice(css.indexOf('.ad-row-current {'))
+    const block = current.slice(0, current.indexOf('}'))
+    expect(block).toContain('var(--ad-active)')
+    // The old neutral wiring must be gone from the active-state block, or the row is half-marked.
+    expect(block).not.toContain('--ad-fill-current')
+    // The badge and the name are the two remaining marks; both must follow the token.
+    const badge = css.slice(css.indexOf('.ad-row-current .ad-badge {'))
+    expect(badge.slice(0, badge.indexOf('}'))).toContain('var(--ad-active)')
+    const title = css.slice(css.indexOf('.ad-row-current .ad-rowTitle {'))
+    expect(title.slice(0, title.indexOf('}'))).toContain('var(--ad-active)')
+    // And the retired token must not linger, or a future edit may resurrect it.
+    expect(css).not.toContain('--ad-fill-current')
+
+    /*
+     * 🔴 The DRIFT check, and it is the only part of this assertion that can actually fail for the
+     * interesting reason.
+     *
+     * The first version of this test asserted "some mark uses `--ad-active`" — then a negative
+     * control recoloured the badge's border back to `currentColor` and the suite stayed GREEN,
+     * because the other marks still satisfied it. A judgement that any one of four marks can
+     * satisfy is not a judgement about the row; it is a judgement about the most compliant line
+     * in it.
+     *
+     * So: NO active-state rule may read `currentColor`. Every selector that targets `.ad-row-current`
+     * (the row, its badge, its title, anything added later) must take its colour from the token,
+     * which is exactly the property that keeps the four marks from disagreeing.
+     */
+    const currentRules = [...css.matchAll(/\.ad-row-current[^{]*\{[^}]*\}/g)].map((match) => match[0])
+    expect(currentRules.length).toBeGreaterThanOrEqual(3)
+    for (const rule of currentRules) {
+      expect(rule, `active-state rule must not fall back to currentColor:\n${rule}`)
+        .not.toContain('currentColor')
+    }
+  })
+
   it('🔴 the display name is editable, and renaming never touches the channel id', () => {
     const page = pageSource()
     // Adding: a name field exists, is derived from the preset, and is marked OPTIONAL — the
@@ -314,14 +365,46 @@ describe('what the owner reported, pinned as assertions', () => {
   })
 
   it('🔴 the rename button cannot also select the channel', () => {
-    // The row is a <label>, so a click on a nested button bubbles into the radio. Without
-    // stopPropagation, renaming a channel would silently make it current — a destructive
-    // side effect on an unrelated action.
+    // Renaming a channel must never silently make it current — a destructive side effect on an
+    // unrelated action.
+    //
+    // 🔴 The mechanism changed on 2026-10-25, and the ASSERTION had to change with it rather than
+    // being deleted. The button used to live INSIDE the row's `<label>` (which wraps the radio), so
+    // it needed `stopPropagation` to keep the click from reaching the radio. It now sits in
+    // `.ad-rowActions`, OUTSIDE the label — so there is no bubbling path to stop, and asserting on
+    // `stopPropagation` would pin an implementation detail that no longer exists.
+    //
+    // The requirement itself is unchanged, so it is now expressed STRUCTURALLY: the rename button
+    // must not be nested inside the radio's label. This survives any future rewiring (a moved
+    // button, a different handler) because it checks the layout fact that makes bubbling possible
+    // in the first place — not the guard that happens to defeat it.
+    //
+    // Both forms are accepted, so an older layout that still uses the guard keeps passing.
     const page = pageSource()
-    const button = page.slice(page.indexOf('className="ad-link ad-renameBtn"'))
-    const body = button.slice(0, button.indexOf('</button>'))
-    expect(body).toContain('event.stopPropagation()')
-    expect(body).toContain('event.preventDefault()')
+    const labelStart = page.indexOf('className="ad-rowPick"')
+    const labelEnd = page.indexOf('</label>', labelStart)
+    const insideLabel = page.slice(labelStart, labelEnd)
+    /*
+     * 🔴 Match the JSX EXPRESSION, not the bare word.
+     *
+     * First run of this assertion reported the button as still inside the label — and it was
+     * wrong: the hit was my own comment (`🔴 改名 MOVED OUT of this line…`), which sits inside the
+     * label because that is where the button used to be. A substring test cannot tell prose from
+     * code, and a judgement that reads comments as evidence will keep firing on the very note that
+     * documents the fix.
+     *
+     * The rendered label text is `{renaming === row.id ? '取消' : '改名'}`, so that exact
+     * expression is what must be absent from the label.
+     */
+    const renameInLabel = insideLabel.includes("'改名'")
+    expect(renameInLabel).toBe(false)
+    // Belt and braces: if anyone moves it back inside the label, the guard must be back too.
+    if (renameInLabel) {
+      const button = insideLabel.slice(insideLabel.indexOf('改名'))
+      expect(button).toContain('event.stopPropagation()')
+    }
+    // And the label must still BE the radio's label — otherwise the check above is vacuous.
+    expect(insideLabel).toContain('name="ad-current-channel"')
   })
 })
 

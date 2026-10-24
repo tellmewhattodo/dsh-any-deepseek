@@ -22,9 +22,20 @@
   --ad-line: color-mix(in srgb, currentColor 18%, transparent);
   --ad-line-strong: color-mix(in srgb, currentColor 32%, transparent);
   --ad-fill-subtle: color-mix(in srgb, currentColor 7%, transparent);
-  /* The current row's fill: visible against both themes because it is derived from the text
-     colour the host already picked, not from an assumed palette. */
-  --ad-fill-current: color-mix(in srgb, currentColor 11%, transparent);
+  /*
+   * 🔴 The ACTIVE channel is green (owner request 2026-10-25: 「激活的样式用绿色」).
+   *
+   * It used to be derived from `currentColor`, which made the live row look like every other
+   * "slightly emphasised" row — the same neutral tint as a hover or a selected input. Green says
+   * "this one is ON" in a way a grey tint cannot, and it matches the key-configured dot and the
+   * 密钥已配置 text that were already green, so the panel now uses one colour for one meaning:
+   * green = working / live. Red stays reserved for destructive and for failures.
+   *
+   * Kept as one token so the mark (border + bar + fill + badge) can never drift apart between
+   * the four places it is applied.
+   */
+  --ad-active: #2f855a;
+  --ad-active-fill: color-mix(in srgb, var(--ad-active) 12%, transparent);
   --ad-danger: #e5534b;
 }
 
@@ -109,31 +120,37 @@
 }
 
 /*
- * 🔴 The current channel is marked three ways, not one.
+ * 🔴 The current channel is marked in GREEN (owner 2026-10-25: 「激活的样式用绿色」).
  *
- * It used to be a small badge plus a barely-different border, and the owner could not tell at a
- * glance which relay was live — glanceability is the whole point of a single-choice list. So:
- * a colour bar down the left edge, a stronger border, and a tinted fill. All derived from
- * `currentColor`, because this host ships no colour tokens (measured: 29 custom properties, none
- * of them a colour), so any hardcoded value would assume the wrong theme.
+ * Previously the marks were derived from `currentColor` — a neutral bar, a stronger border and a
+ * grey tint. All three were so low-contrast that the live row read as "merely hovered", which is
+ * exactly what the owner was reacting to.
+ *
+ * Green is also the coherent choice: the key dot and 密钥已配置 text were already green, so the
+ * panel now uses ONE colour for ONE meaning (green = working / live), and red stays reserved for
+ * destructive actions and failures.
+ *
+ * Four marks read from the same token so they cannot drift apart: left bar, border, fill, badge.
  */
 .ad-row-current {
-  border-color: var(--ad-line-strong);
-  border-left-color: currentColor;
-  background: var(--ad-fill-current);
+  border-color: var(--ad-active);
+  border-left-color: var(--ad-active);
+  background: var(--ad-active-fill);
 }
 
-/* The 当前 badge keeps its place as the textual confirmation, for when colour is not enough. */
+/* The 当前 badge is the textual confirmation, for when colour alone is not enough (colour-blind
+   readers, screenshots, forced-colours mode). */
 .ad-row-current .ad-badge {
-  border-color: currentColor;
+  border-color: var(--ad-active);
+  color: var(--ad-active);
   opacity: 1;
   font-weight: 600;
 }
 
-/* A rename button must not look like the row's own selection affordance. */
-.ad-renameBtn {
-  margin-left: auto;
-  flex: none;
+/* The live row's NAME goes green too: the name is where the eye lands first, so marking only the
+   border leaves the reader to connect two separate cues. */
+.ad-row-current .ad-rowTitle {
+  color: var(--ad-active);
 }
 
 /*
@@ -175,12 +192,18 @@
 }
 
 /*
- * The single detail line under a channel's name.
+ * The live-state line under a channel's name: probe verdict and/or balance, nothing else.
  *
- * It carries what used to be FOUR stacked lines (endpoint identity / key state / probe verdict /
- * balance). `flex-wrap` is deliberate: on a narrow panel these wrap to a second line, which is a
- * better outcome than clipping the endpoint URL. `row-gap` is tighter than `column-gap` so a wrap
- * still reads as one paragraph rather than as separate rows.
+ * 🔴 It shrank twice at the owner's request, and the history matters:
+ *   2026-10-24 「紧凑些」 — four stacked lines (endpoint identity / key state / verdict / balance)
+ *                           became one wrapping line;
+ *   2026-10-25 「这部分不要了」 — endpoint identity and key state were removed outright. What
+ *                           remains is only what changes at runtime: did the probe pass, what is
+ *                           the balance. Those two cannot be derived from anything else on screen,
+ *                           which is why they survived while model/api/baseURL did not.
+ *
+ * The element is rendered ONLY when one of them exists, so an unprobed, unpriced channel shows a
+ * single-line row with no orphan gap.
  */
 .ad-rowDetail {
   display: flex;
@@ -586,42 +609,13 @@ select.ad-input option {
   color: #c53030;
 }
 
-/* ── key row ──────────────────────────────────────────────────────────────── */
-
-/*
- * The key line states a FACT and offers the fix beside it: "configured / not configured",
- * the reference name the secret is filed under, and one text button that opens the input.
- *
- * The value is never shown — the harness credential seam answers "configured?" and refuses to
- * answer anything else, so there is nothing to render even if we wanted to.
- *
- * 🔴 `inline-flex`, not `flex`, and NO vertical padding: since the compactness pass this sits
- * INSIDE `.ad-rowDetail` (one wrapping line), so a block-level flex box with `padding-top: 2px`
- * would add a break and a 2px bump to every row. Inline keeps "密钥已配置 更换" together as one
- * token in the flow.
- */
-.ad-keyLine {
-  display: inline-flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-
-.ad-keyOn {
-  color: #2f855a;
-}
-
-.ad-keyOff {
-  color: #b7791f;
-}
+/* ── balance ──────────────────────────────────────────────────────────────── */
 
 /*
  * Remaining balance.
  *
- * Same line shape as the key state — it is another fact about this channel, not a control. The
- * subtle fill marks it as a measurement (like `ad-keyName`) rather than a warning: the words
- * themselves say whether it is fine ("72.50 USD") or not ("（余额不足）").
+ * A fact about this channel, not a control. The subtle fill marks it as a measurement rather than
+ * a warning: the words themselves say whether it is fine ("72.50 USD") or not ("（余额不足）").
  */
 .ad-balance {
   font-variant-numeric: tabular-nums;
