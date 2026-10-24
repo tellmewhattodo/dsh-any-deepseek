@@ -125,6 +125,8 @@ const stats: StatsResponse = {
       label: 'DeepSeek Official',
       tokensPerSecond: 168.2,
       firstTokenMs: 3145.3,
+      // 284.94M total over 994 requests that reported usage.
+      meanContext: 286_660,
       aggregate: {
         requests: 994, failures: 2, unreported: 0,
         input: 283_700_000, output: 1_240_000, cacheRead: 96_000_000, cacheWrite: 0,
@@ -136,6 +138,8 @@ const stats: StatsResponse = {
       label: 'OpenCode Go-1',
       tokensPerSecond: 142.7,
       firstTokenMs: 1830.4,
+      // 141.88M over 611 reporting requests (one did not report).
+      meanContext: 232_209,
       aggregate: {
         requests: 612, failures: 0, unreported: 1,
         input: 141_000_000, output: 880_000, cacheRead: 52_000_000, cacheWrite: 0,
@@ -147,6 +151,7 @@ const stats: StatsResponse = {
       label: 'Ollama Cloud-1',
       tokensPerSecond: 121.5,
       firstTokenMs: 1067.0,
+      meanContext: 213_029,
       aggregate: {
         requests: 208, failures: 1, unreported: 0,
         input: 44_000_000, output: 310_000, cacheRead: 12_000_000, cacheWrite: 0,
@@ -158,6 +163,14 @@ const stats: StatsResponse = {
       label: 'Open Design-1',
       tokensPerSecond: null,
       firstTokenMs: null,
+      /*
+       * 🔴 Deliberately NO `meanContext`, `tokensPerSecond` or `firstTokenMs`.
+       *
+       * This row is the harness's standing example of the unmeasurable case: the panel must render
+       * `—` here, never `0`. A screenshot that only ever shows populated cells would let a
+       * "zero instead of null" regression look correct, so one row keeps the empty shape on
+       * purpose.
+       */
       aggregate: {
         requests: 93, failures: 0, unreported: 0,
         input: 5_100_000, output: 94_000, cacheRead: 0, cacheWrite: 0,
@@ -172,6 +185,8 @@ const stats: StatsResponse = {
   },
   totalSpeed: 161.4,
   totalFirstTokenMs: 2901.7,
+  // 476.32M total over the 1906 requests that reported usage (one did not).
+  meanContext: 249_908,
   note: '',
 }
 

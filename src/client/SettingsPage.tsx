@@ -30,7 +30,7 @@ import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BalanceResponse, BalanceRow, ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
 import type { SettingsWire } from './index.js'
-import { formatBalance, formatDuration, formatSpeed, formatTokens } from './panel-api.js'
+import { formatBalance, formatDuration, formatMeanContext, formatSpeed, formatTokens } from './panel-api.js'
 import './SettingsPage.css'
 
 /** What the plugin's `apply` hands this component. */
@@ -540,75 +540,92 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                         </button>
                       </span>
                     )}
-                    <span className="ad-rowMeta">
-                      <span className="ad-mono">{row.model}</span>
-                      <span className="ad-sep">·</span>
-                      <span>{row.api}</span>
-                      <span className="ad-sep">·</span>
-                      <span className="ad-mono">{row.baseURL}</span>
-                    </span>
-                    {probeResult !== undefined && (
-                      <span className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
-                        {probeResult.ok
-                          ? `通（${probeResult.ms}ms）`
-                          : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
-                      </span>
-                    )}
                     {/*
-                      Key state is shown as a fact, with the fix one step away: an unconfigured
-                      channel offers the input inline rather than sending the user off to another
-                      screen. `keyConfigured` is the host's own answer (it never returns the value).
+                      🔴 ONE detail line, not four (owner request 2026-10-24:
+                      「每个渠道高度希望小一些，紧凑些」).
 
-                      🔴 `keyRefValid === false` is a DIFFERENT state from "no key yet": the entry
-                      has something that is not a credential name in the name field (in practice
-                      a key pasted into it). Calling that "未配置" would be true but useless — the
-                      user's next action is not "add a key", it is "fix the slot", which the panel
-                      now does for them when they save one.
+                      The row previously stacked 模型·协议·地址 / 密钥态 / 余额 / 探测结果 as
+                      separate lines — four lines of secondary fact under one line of name. With
+                      five channels that spent most of the panel on whitespace.
+
+                      Nothing was removed to fix it: every one of those facts is still rendered,
+                      but they now share one wrapping line. Order is by importance to a reader
+                      scanning for "why isn't this working": the endpoint identity first, then the
+                      key state, then the live verdict, then the balance.
                     */}
-                    {row.keyConfigured ? (
-                      <span className="ad-keyLine">
-                        <span className="ad-keyOn">密钥已配置</span>
-                        {row.keyKind === 'reference' && (
-                          <code className="ad-mono ad-keyName">{row.keyRef}</code>
-                        )}
-                        <button
-                          type="button"
-                          className="ad-link"
-                          onClick={() => setKeying(keying === row.id ? null : row.id)}
-                        >
-                          {keying === row.id ? '取消' : '更换'}
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="ad-keyLine">
-                        <span className="ad-keyOff">未配置密钥</span>
-                        <button
-                          type="button"
-                          className="ad-link"
-                          onClick={() => setKeying(keying === row.id ? null : row.id)}
-                        >
-                          {keying === row.id ? '取消' : '填写密钥'}
-                        </button>
-                      </span>
-                    )}
-                    {/*
-                      Remaining balance, when this endpoint exposes one.
+                    <span className="ad-rowDetail">
+                      <span className="ad-mono" title="上游模型 id">{row.model}</span>
+                      <span className="ad-sep">·</span>
+                      <span title="接口协议">{row.api}</span>
+                      <span className="ad-sep">·</span>
+                      <span className="ad-mono" title="端点地址">{row.baseURL}</span>
+                      {probeResult !== undefined && (
+                        <span className={`ad-probe ad-probe-${probeResult.ok ? 'ok' : 'bad'}`}>
+                          {probeResult.ok
+                            ? `通（${probeResult.ms}ms）`
+                            : `不通：${probeResult.code ?? 'ERROR'}${probeResult.message === undefined ? '' : ` — ${probeResult.message}`}`}
+                        </span>
+                      )}
+                      {/*
+                        Key state is shown as a fact, with the fix one step away: an unconfigured
+                        channel offers the input inline rather than sending the user off to another
+                        screen. `keyConfigured` is the host's own answer (it never returns the value).
 
-                      🔴 Four different silences, kept distinct: `undefined` = not fetched yet
-                      (nothing shown), `unsupported` = no balance API and no liveness check ran,
-                      `alive` = no balance API but a minimal live request SUCCEEDED ⇒ the account
-                      still has credit (no amount is claimed), `unavailable` = it was tried and did
-                      not answer. None of them is rendered as a number, because "0.00" would read
-                      as "you are out of credit".
+                        🔴 `keyRefValid === false` is a DIFFERENT state from "no key yet": the entry
+                        has something that is not a credential name in the name field (in practice
+                        a key pasted into it). Calling that "未配置" would be true but useless — the
+                        user's next action is not "add a key", it is "fix the slot", which the panel
+                        now does for them when they save one.
+                      */}
+                      {row.keyConfigured ? (
+                        <span className="ad-keyLine">
+                          <span className="ad-keyOn">密钥已配置</span>
+                          {row.keyKind === 'reference' && (
+                            <code className="ad-mono ad-keyName">{row.keyRef}</code>
+                          )}
+                          <button
+                            type="button"
+                            className="ad-link"
+                            onClick={(event) => {
+                              event.preventDefault()
+                              setKeying(keying === row.id ? null : row.id)
+                            }}
+                          >
+                            {keying === row.id ? '取消' : '更换'}
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="ad-keyLine">
+                          <span className="ad-keyOff">未配置密钥</span>
+                          <button
+                            type="button"
+                            className="ad-link"
+                            onClick={(event) => {
+                              event.preventDefault()
+                              setKeying(keying === row.id ? null : row.id)
+                            }}
+                          >
+                            {keying === row.id ? '取消' : '填写密钥'}
+                          </button>
+                        </span>
+                      )}
+                      {/*
+                        Remaining balance, when this endpoint exposes one.
 
-                      Fetched on demand via the 查询余额 button — not on mount — so opening the panel
-                      to rename something does not fan out a request to every relay.
-                    */}
-                    {balances[row.id] !== undefined && (
-                      <span className="ad-keyLine">
+                        🔴 Four different silences, kept distinct: `undefined` = not fetched yet
+                        (nothing shown), `unsupported` = no balance API and no liveness check ran,
+                        `alive` = no balance API but a minimal live request SUCCEEDED ⇒ the account
+                        still has credit (no amount is claimed), `unavailable` = it was tried and did
+                        not answer. None of them is rendered as a number, because "0.00" would read
+                        as "you are out of credit".
+
+                        Fetched on demand via the 查询余额 button — not on mount — so opening the panel
+                        to rename something does not fan out a request to every relay.
+                      */}
+                      {balances[row.id] !== undefined && (
                         <span className="ad-balance">{formatBalance(balances[row.id] as BalanceRow)}</span>
-                      </span>
-                    )}
+                      )}
+                    </span>
                     {keying === row.id && (
                       <span className="ad-keyForm">
                         <input
@@ -840,6 +857,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   <th className="ad-num">缓存写</th>
                   <th className="ad-num">输出</th>
                   <th className="ad-num">合计</th>
+                  <th className="ad-num" title="每次请求平均携带的 token 数（含缓存命中）—— 与模型的 1M 窗口对照看，可判成本由对话长度还是窗口驱动">平均上下文</th>
                   <th className="ad-num" title="生成阶段速度（不含首字等待）">速度</th>
                   <th className="ad-num" title="首字平均等待时间">首字</th>
                 </tr>
@@ -861,6 +879,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     <td className="ad-num">{formatTokens(row.aggregate.output)}</td>
                     <td className="ad-num">{formatTokens(row.aggregate.total)}</td>
                     {/*
+                      Mean context size — the cost-optimisation reference the owner asked for
+                      (2026-10-24). An em dash for "no request reported usage", never `0`: zero
+                      tokens per request is a different and false claim.
+                    */}
+                    <td className="ad-num">{formatMeanContext(row.meanContext)}</td>
+                    {/*
                       Speed comes last, after the volume columns, because it is a different kind of
                       number: the rest are totals, this one is a rate. `—` means "not measured" and
                       is deliberately not `0`.
@@ -878,6 +902,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   <td className="ad-num">{formatTokens(stats.total.cacheWrite)}</td>
                   <td className="ad-num">{formatTokens(stats.total.output)}</td>
                   <td className="ad-num">{formatTokens(stats.total.total)}</td>
+                  <td className="ad-num">{formatMeanContext(stats.meanContext)}</td>
                   <td className="ad-num">{formatSpeed(stats.totalSpeed)}</td>
                   <td className="ad-num">{formatDuration(stats.totalFirstTokenMs)}</td>
                 </tr>
@@ -889,14 +914,26 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         {/*
           The counting convention is printed, not assumed. Harness token counts are disjoint, so
           a reader who sums the wrong columns concludes the input is being under-reported.
+
+          🔴 The RANGE is printed too (owner request 2026-10-24: 「只保留近一周」). Saying "last 7
+          days" is mandatory rather than cosmetic: the same table without a stated window invites
+          the reader to assume it is all-time, and a header that says 合计 over a week looks
+          identical to one over a month. The ledger files themselves are NOT pruned — only the
+          default view is narrowed — so nothing is lost; the sentence says which it is.
         */}
         <p className="ad-note">
           口径：<strong>输入</strong>只算未命中缓存的输入；缓存读 / 缓存写单独成列，
           三者相加才是<strong>计费输入</strong>。
+          <strong>平均上下文</strong>是每次请求平均携带的 token 数（含缓存命中）——
+          与模型的 1M 窗口对照看：远低于窗口说明成本由对话长度驱动，不是窗口。
           速度只算生成阶段（总时长减去首字等待），<span className="ad-mono">—</span> 表示没测到，不是 0。
           {stats !== null && stats.total.unreported > 0 && (
             <> 另有 {stats.total.unreported} 次请求上游未回报用量，不计入合计。</>
           )}
+        </p>
+        <p className="ad-note">
+          范围：<strong>近 7 天</strong>。更早的账本仍在磁盘上（按月的 JSONL，未删除），
+          只是这个视图默认不展示——历史记录是花销的唯一凭据，删掉就回不来了。
         </p>
       </section>
       )}

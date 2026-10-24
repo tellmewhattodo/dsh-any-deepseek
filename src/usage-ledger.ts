@@ -122,6 +122,40 @@ export function meanFirstTokenMs(aggregate: LedgerAggregate): number | null {
   return aggregate.ttftMs / aggregate.timed
 }
 
+/**
+ * Mean context size per request, in tokens — the owner's 「平均的上下文窗口大小」.
+ *
+ * ## What this number is, precisely
+ *
+ * It is the mean of *tokens carried by one request*, not of the model's capacity: the model's
+ * window is 1M for every channel, so reporting that number again would say nothing about how the
+ * thing is actually used. The useful reading is the gap between the two — a mean context far
+ * below the window means the window is not the constraint and cost is driven by conversation
+ * length, which is what makes this number a cost-optimisation reference rather than trivia.
+ *
+ * Numerator is `total` (= billable input + output), i.e. everything that crossed the wire for
+ * that request. Cache hits are INCLUDED: a cached token still occupies the window even though it
+ * is billed at a lower rate, so leaving it out would understate context pressure.
+ *
+ * ## Why the denominator is not `requests`
+ *
+ * `requests` counts every call, including the ones the relay answered without reporting usage
+ * (`unreported`). Those contributed nothing to the numerator, so dividing by them would silently
+ * deflate the average — the same trap `timed` exists to avoid for the speed figures.
+ *
+ * 🔴 **Not `requests - unreported - failures` either.** A failed call that reported no usage is
+ * already inside `unreported` (`addToAggregate` increments both), so subtracting `failures` as
+ * well would remove it twice and overstate the mean. The single correct denominator is the count
+ * of entries that actually contributed to `total`, which is exactly `requests - unreported`.
+ * @param aggregate - one group's figures.
+ * @returns mean tokens per usage-reporting request, or null when none reported.
+ */
+export function meanContextTokens(aggregate: LedgerAggregate): number | null {
+  const reported = aggregate.requests - aggregate.unreported
+  if (reported <= 0) return null
+  return aggregate.total / reported
+}
+
 /** Aggregation result for one grouping. */
 export interface LedgerSummary {
   /** Group key (channel id, or `YYYY-MM-DD`). */

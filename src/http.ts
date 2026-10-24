@@ -30,6 +30,7 @@ import {
   summarize,
   totalOf,
   dayKey,
+  meanContextTokens,
   meanFirstTokenMs,
   outputTokensPerSecond,
   type LedgerEntry,
@@ -542,8 +543,24 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
       path: `${ROUTE_PREFIX}/stats`,
       handler: async (req, res) => {
         const url = new URL(req.url ?? '/', 'http://localhost')
-        const from = queryDate(url.searchParams.get('from'))
-        const to = queryDate(url.searchParams.get('to'))
+        /**
+         * 🔴 The default range is the last 7 days (owner request 2026-10-24: 「只保留近一周」).
+         *
+         * Read as a DISPLAY default, not as data deletion. Deleting old ledger lines would be
+         * irreversible and would silently rewrite history — the file is the only record of what
+         * was spent. Narrowing what the table shows achieves the stated goal (a week is what the
+         * reader acts on) while keeping the older lines available to any explicit `from`/`to`.
+         *
+         * An explicit `from`/`to` always wins; this only fills the gap when the panel asks for
+         * "the default view".
+         */
+        const DEFAULT_RANGE_DAYS = 7
+        const requestedFrom = queryDate(url.searchParams.get('from'))
+        const requestedTo = queryDate(url.searchParams.get('to'))
+        const to = requestedTo ?? (requestedFrom === undefined ? new Date() : undefined)
+        const from = requestedFrom ?? (to === undefined
+          ? undefined
+          : new Date(to.getTime() - DEFAULT_RANGE_DAYS * 24 * 60 * 60 * 1000))
         const group = url.searchParams.get('group') ?? 'channel'
         const entries: LedgerEntry[] = await readLedgerRange(deps.ledgerDir(), from, to)
         const rows = group === 'day'
@@ -573,6 +590,11 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
           // an em dash rather than a zero.
           tokensPerSecond: outputTokensPerSecond(row.aggregate),
           firstTokenMs: meanFirstTokenMs(row.aggregate),
+          // Owner request 2026-10-24: 「希望统计平均的上下文窗口大小，可以供成本优化参考」.
+          // Mean tokens PER REQUEST (window occupancy), not the model's 1M capacity — the
+          // capacity is constant and says nothing about how the thing is used. See
+          // `meanContextTokens` for why cache hits are included and how the denominator is chosen.
+          meanContext: meanContextTokens(row.aggregate),
         }))
         const totalAggregate = totalOf(rows)
         json(res, 200, {
@@ -590,9 +612,11 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
            */
           totalSpeed: outputTokensPerSecond(totalAggregate),
           totalFirstTokenMs: meanFirstTokenMs(totalAggregate),
+          meanContext: meanContextTokens(totalAggregate),
           // Stated in the payload so any consumer repeats it rather than inventing its own.
           note: 'input is uncached input only; billable input = input + cacheRead + cacheWrite; '
-            + 'tokensPerSecond counts generation time only (total minus time-to-first-token)',
+            + 'tokensPerSecond counts generation time only (total minus time-to-first-token); '
+            + 'meanContext is total tokens per usage-reporting request',
         })
       },
     },

@@ -238,13 +238,39 @@ describe('GET /stats', () => {
     expect(body.range.from).toBe('2026-10-01T00:00:00.000Z')
   })
 
+  it('🔴 defaults to the last 7 days when no range is given (owner 2026-10-24: 「只保留近一周」)', async () => {
+    const { call } = mount()
+    const response = await call(`${ROUTE_PREFIX}/stats`)
+    const body = response.body as { range: { from: string | null; to: string | null } }
+    // The default view is a week. This is a DISPLAY default, not data deletion — the ledger files
+    // are untouched and an explicit range still reads anything (assertions below).
+    expect(body.range.from).not.toBeNull()
+    expect(body.range.to).not.toBeNull()
+    const spanDays = (new Date(body.range.to as string).getTime() - new Date(body.range.from as string).getTime()) / 86_400_000
+    expect(spanDays).toBeCloseTo(7, 5)
+  })
+
+  it('🔴 an explicit range still overrides the 7-day default (older data stays readable)', async () => {
+    // Narrowing the VIEW must not narrow the DATA. If this ever fails, the "last 7 days" change
+    // has silently become a retention policy on history — which nobody asked for.
+    const { call } = mount()
+    const response = await call(`${ROUTE_PREFIX}/stats`, {
+      query: 'from=2026-01-01T00:00:00Z&to=2026-01-31T00:00:00Z',
+    })
+    const body = response.body as { range: { from: string; to: string } }
+    expect(body.range.from).toBe('2026-01-01T00:00:00.000Z')
+    expect(body.range.to).toBe('2026-01-31T00:00:00.000Z')
+  })
+
   it('ignores an unparseable date rather than returning 400', async () => {
     const { call } = mount()
     const response = await call(`${ROUTE_PREFIX}/stats`, { query: 'from=not-a-date' })
-    // The panel refreshes on a timer; a malformed range must degrade to "all time", not to an
-    // error the user cannot act on.
+    // The panel refreshes on a timer; a malformed range must degrade to the default window,
+    // not to an error the user cannot act on.
     expect(response.status).toBe(200)
-    expect((response.body as { range: { from: string | null } }).range.from).toBeNull()
+    // Still the 7-day default rather than null: an unparseable bound falls back, it does not open
+    // the range to all time (which would silently show the whole history under a "近一周" heading).
+    expect((response.body as { range: { from: string | null } }).range.from).not.toBeNull()
   })
 
   describe('🔴 rows carry the channel DISPLAY NAME (owner: 「统计要按显示名称来」)', () => {

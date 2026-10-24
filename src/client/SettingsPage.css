@@ -78,14 +78,29 @@
   gap: 6px;
 }
 
+/*
+ * 🔴 Compact rows (owner request 2026-10-24: 「每个渠道高度希望小一些，紧凑些」).
+ *
+ * The row used to be a four-line stack — title / model·api·baseURL / key line / balance — and
+ * with five channels that is most of the panel spent on air. The fix is layout, not information:
+ * everything stays on screen, but the secondary facts move BESIDE the name instead of under it.
+ *
+ * What changed and why:
+ *  · padding 10px→7px and gap 6px→4px: the row now reads as one line of text plus a hairline of
+ *    metadata, instead of a card with its own interior spacing;
+ *  · `ad-rowMain` became a ROW (was a column): the title line and the meta line share one axis,
+ *    so the row is two text lines tall at most, not four;
+ *  · the meta line keeps `flex-wrap` — on a narrow panel it may wrap, and that is the correct
+ *    trade: a row that stays readable beats one that clips the endpoint URL.
+ */
 .ad-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   border: 1px solid var(--ad-line);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 7px 10px;
   /*
    * The left edge is reserved on EVERY row so the current one does not shift its content when
    * selected — a row that reindents on click makes the list feel like it moved.
@@ -121,11 +136,16 @@
   flex: none;
 }
 
+/*
+ * The row's content is a COLUMN of at most two lines: (1) name + status, (2) everything else.
+ * It was a four-line stack before the compactness pass — see the note on `.ad-row`.
+ */
 .ad-rowMain {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .ad-rowTitleLine {
@@ -134,6 +154,7 @@
   gap: 6px;
   font-size: 13px;
   font-weight: 500;
+  min-width: 0;
 }
 
 .ad-rowTitle {
@@ -153,11 +174,20 @@
   cursor: help;
 }
 
-.ad-rowMeta {
+/*
+ * The single detail line under a channel's name.
+ *
+ * It carries what used to be FOUR stacked lines (endpoint identity / key state / probe verdict /
+ * balance). `flex-wrap` is deliberate: on a narrow panel these wrap to a second line, which is a
+ * better outcome than clipping the endpoint URL. `row-gap` is tighter than `column-gap` so a wrap
+ * still reads as one paragraph rather than as separate rows.
+ */
+.ad-rowDetail {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
+  row-gap: 2px;
   font-size: 11px;
   opacity: 0.66;
   min-width: 0;
@@ -564,14 +594,18 @@ select.ad-input option {
  *
  * The value is never shown — the harness credential seam answers "configured?" and refuses to
  * answer anything else, so there is nothing to render even if we wanted to.
+ *
+ * 🔴 `inline-flex`, not `flex`, and NO vertical padding: since the compactness pass this sits
+ * INSIDE `.ad-rowDetail` (one wrapping line), so a block-level flex box with `padding-top: 2px`
+ * would add a break and a 2px bump to every row. Inline keeps "密钥已配置 更换" together as one
+ * token in the flow.
  */
 .ad-keyLine {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  padding-top: 2px;
 }
 
 .ad-keyOn {

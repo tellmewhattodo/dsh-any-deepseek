@@ -14,6 +14,7 @@ import {
   readLedgerRange,
   summarize,
   totalOf,
+  meanContextTokens,
   meanFirstTokenMs,
   outputTokensPerSecond,
   type LedgerEntry,
@@ -258,5 +259,64 @@ describe('token speed (owner: 「能加上 token 速度统计吗」)', () => {
     expect(total.ttftMs).toBe(200)
     expect(total.generationMs).toBe(800)
     expect(outputTokensPerSecond(total)).toBeCloseTo(50 / 0.8, 5)
+  })
+})
+
+describe('mean context size (owner 2026-10-24: 「希望统计平均的上下文窗口大小」)', () => {
+  /**
+   * 🔴 What this number must be: tokens carried by ONE request — not the model's capacity.
+   *
+   * The capacity is a constant 1M on every channel, so echoing it back would be a fact about the
+   * preset, not about usage. The actionable reading is the gap: a mean well below the window
+   * means cost is driven by conversation length rather than by the window.
+   */
+
+  it('divides total tokens by the requests that actually reported usage', () => {
+    // One fixture entry: 100 input + 400 cacheRead + 50 output = 550 tokens carried.
+    const aggregate = addToAggregate(emptyAggregate(), entry())
+    expect(aggregate.total).toBe(550)
+    expect(meanContextTokens(aggregate)).toBe(550)
+  })
+
+  it('🔴 counts CACHE HITS in the numerator — they occupy the window even when billed cheaper', () => {
+    // The trap: dropping cacheRead would report 150 tokens for a request that really carried 550.
+    const aggregate = addToAggregate(emptyAggregate(), entry())
+    const withoutCache = aggregate.total - aggregate.cacheRead
+    expect(meanContextTokens(aggregate)).toBeGreaterThan(withoutCache)
+  })
+
+  it('🔴 excludes unreported requests from the DENOMINATOR (not from the total)', () => {
+    // A request the relay answered without reporting usage contributed 0 to `total`, so counting
+    // it in the divisor would deflate the mean. 550 tokens over ONE reporting request.
+    const accumulator = emptyAggregate()
+    addToAggregate(accumulator, entry())
+    addToAggregate(accumulator, entry({ usage: null }))
+    expect(accumulator.requests).toBe(2)
+    expect(accumulator.unreported).toBe(1)
+    expect(meanContextTokens(accumulator)).toBe(550)
+  })
+
+  it('🔴 does NOT subtract failures a second time', () => {
+    // `addToAggregate` increments BOTH `failures` and `unreported` for a failed usage-less call,
+    // so `requests - unreported - failures` would remove it twice and overstate the mean.
+    const accumulator = emptyAggregate()
+    addToAggregate(accumulator, entry())
+    addToAggregate(accumulator, entry({ ok: false, usage: null, code: 'QUOTA' }))
+    expect(accumulator.failures).toBe(1)
+    expect(accumulator.unreported).toBe(1)
+    expect(meanContextTokens(accumulator)).toBe(550)
+  })
+
+  it('🔴 reports null (not zero) when no request reported usage', () => {
+    // Zero would claim every request carried nothing — a different, false statement.
+    const aggregate = addToAggregate(emptyAggregate(), entry({ usage: null }))
+    expect(meanContextTokens(aggregate)).toBeNull()
+    expect(meanContextTokens(emptyAggregate())).toBeNull()
+  })
+
+  it('sums into the footer total', () => {
+    const total = totalOf(summarize([entry(), entry()], () => 'k'))
+    // 550 + 550 over two reporting requests.
+    expect(meanContextTokens(total)).toBe(550)
   })
 })

@@ -68,6 +68,8 @@ export interface StatsRow {
    * The panel renders an em dash for that, never `0`, which would read as "instant".
    */
   tokensPerSecond?: number | null
+  /** Mean tokens per usage-reporting request — the average context size (cost reference). */
+  meanContext?: number | null
   /** Mean time to first token, in ms; `null`/absent when nothing was timed. */
   firstTokenMs?: number | null
   aggregate: {
@@ -93,6 +95,8 @@ export interface StatsResponse {
   totalSpeed?: number | null
   /** Footer mean time to first token, computed server-side from the summed aggregate. */
   totalFirstTokenMs?: number | null
+  /** Footer mean context size, computed server-side from the summed aggregate. */
+  meanContext?: number | null
   note?: string
 }
 
@@ -316,6 +320,20 @@ export function formatTokens(value: number): string {
   if (value < 1000) return String(value)
   if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}K`
   return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 2 : 1)}M`
+}
+
+/**
+ * Format a mean-context figure, or an em dash when nothing reported usage.
+ *
+ * 🔴 Same discipline as {@link formatSpeed}: `null` is not `0`. "No request reported usage" and
+ * "every request carried zero tokens" are different statements, and only the first one is true
+ * here — so the unmeasurable case renders as an em dash.
+ * @param value - mean tokens per request, or null/undefined.
+ * @returns e.g. `28.1K`, or `—`.
+ */
+export function formatMeanContext(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return '—'
+  return formatTokens(Math.round(value))
 }
 
 /**

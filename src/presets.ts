@@ -316,10 +316,44 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
     model: 'deepseek-v4-flash-202605',
     contextWindow: 1_024_000,
     maxTokens: 384_000,
-    // 🔴 text-only, per the owner's own live profile (`input: [text]`). Nothing measured says it
-    // takes images, and declaring an unverified capability would be the same class of error as the
-    // "Probed live" comment this repo had to retract.
-    input: ['text'],
+    /**
+     * 🔴 **`image` is declared, and the earlier `['text']` was a FABRICATED justification.**
+     *
+     * 0.0.18 shipped `input: ['text']` with the comment "per the owner's own live profile
+     * (`input: [text]`)". That citation was false: the owner's profile declares BOTH. Measured
+     * from this machine's own composed profile tree
+     * (`msm("dsh-develop", ["dump-config"])` → `llm-pi-ai.providers.zy-tecenthub.models[0]`):
+     *
+     *     id: deepseek-v4-flash-202605
+     *     input: [text, image]
+     *
+     * This is the same class of error as the "Probed live" comment this repo retracted once
+     * already: an assertion of evidence nobody gathered. It is worse than silence here because
+     * it made a REAL defect look like a documented endpoint limitation — see the failure
+     * mechanism below.
+     *
+     * ## What the false declaration actually did (owner report 2026-10-23: 「能用，但收不到图」)
+     *
+     * A channel that omits `image` does not merely "not offer" images — pi-ai REWRITES them out
+     * on the way to the wire: `downgradeUnsupportedImages()` replaces every image block with
+     * `"(image omitted: model does not support images)"` when `!model.input.includes('image')`
+     * (`pi-ai/dist/api/transform-messages.js:38-57`, applied at
+     * `openai-completions.js:899`). The request still succeeds, nothing throws, and the model
+     * answers as though the message were text — the exact silent shape the decision-32 fix was
+     * written to remove. The declaration IS the delivery switch.
+     *
+     * ## Why `image` is the honest value here
+     *
+     * Two independent records agree, and neither is an inference:
+     *  · the owner's own working profile (quoted above);
+     *  · Tencent's model list, Chinese edition, updated 2026-10-21, lists this exact id with
+     *    「图片理解」: https://cloud.tencent.com/document/product/1823/130051
+     * ⚠️ The INTL edition of the same page (updated 2026-09-25) omits it. Both are official and
+     * they disagree; the newer one is the one to follow, and the divergence is recorded in
+     * `note` rather than hidden — so the next reader knows this claim had a live dispute, not a
+     * clean consensus.
+     */
+    input: ['text', 'image'],
     // The thinking-level table and DeepSeek's thinking dialect DO carry over: this endpoint is a
     // first-party forward of DeepSeek's own model, so the wire spellings are the same family's.
     reasoningEfforts: { ...V41_FLASH_CAPS.reasoningEfforts },
@@ -341,7 +375,7 @@ export const CHANNEL_PRESETS: Readonly<Record<string, ChannelPreset>> = {
      * every check, which is the mistake this repo already made once and recorded.
      */
     note: 'Tencent Cloud forwarding endpoint; model id is frozen with a -202605 suffix. '
-      + 'Text-only, per the endpoint record. '
+      + 'Takes images (owner profile + Tencent model list, 2026-10-21). '
       + 'No balance API — the panel verifies liveness instead.',
   },
   ollama: {

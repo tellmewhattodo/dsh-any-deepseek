@@ -71,19 +71,20 @@ describe('presets', () => {
     // was a measured failure — a screenshot reached the plugin and the model answered as though
     // the message had been text only.
     //
-    // 🔴 EXCEPT where the endpoint's own record says text-only. `tencent-tokenhub` is that case:
-    // the owner's live profile declares `input: [text]` for it, and nothing measured contradicts
-    // that. Claiming `image` there would be an unverified capability — the same class of error as
-    // the fabricated "Probed live" comment. So the rule is "declare it unless the record says
-    // otherwise, and if it says otherwise, say so in the preset's note".
-    const textOnlyByRecord = new Set(['tencent-tokenhub'])
+    // 🔴 NO EXCEPTIONS. This test used to carry an escape hatch: a `textOnlyByRecord` set that let
+    // `tencent-tokenhub` declare text-only as long as its `note` said why. That exemption was
+    // built on a FALSE record — the owner's profile declares `input: [text, image]`, and 0.0.18
+    // misquoted it as `[text]`. So the hatch did not protect an endpoint limitation; it gave a
+    // defect a place to hide, and the user-visible result was 「能用，但收不到图」.
+    //
+    // The generalisable lesson, worth more than the fix: **a judgement that can be satisfied by
+    // prose ("explain why in `note`") is not a judgement about behaviour.** The `note` string is
+    // not evidence; whoever writes it supplies both sides of the argument. Declaring `image` is
+    // safe to get wrong in exactly one direction — an endpoint that cannot take images answers
+    // with an error the user can see — whereas omitting it fails silently (pi-ai rewrites the
+    // image to a placeholder and the request succeeds).
     for (const [id, preset] of Object.entries(CHANNEL_PRESETS)) {
-      if (textOnlyByRecord.has(id)) {
-        expect(preset.input, `${id} 按记录是纯文本，且必须在 note 里写明`).not.toContain('image')
-        expect(preset.note ?? '', `${id} 必须在 note 里说明为什么不是 text+image`).toMatch(/text/i)
-        continue
-      }
-      expect(preset.input, id).toContain('image')
+      expect(preset.input, `${id} must declare image input`).toContain('image')
     }
   })
 
@@ -200,6 +201,23 @@ describe('Tencent TokenHub — 固定 0605 后缀，且没有余额接口', () =
     // Taken from the live profile (`llm-pi-ai.providers.zy-tecenthub`), not invented.
     expect(preset?.contextWindow).toBe(1_024_000)
     expect(preset?.maxTokens).toBe(384_000)
+  })
+
+  it('🔴 declares image input — the owner’s profile says [text, image], not [text]', () => {
+    // The regression this pins (0.0.18 → owner report 「能用，但收不到图」). Two independent
+    // records both say this endpoint takes images:
+    //  · `dump-config` → `llm-pi-ai.providers.zy-tecenthub.models[0].input` = [text, image];
+    //  · Tencent's model list (CN, updated 2026-10-21) marks this id 「图片理解」.
+    //
+    // ⚠️ The INTL edition (2026-09-25) does NOT mark it. Both pages are official and disagree;
+    // the newer one wins, and `note` records the dispute rather than pretending it is settled.
+    //
+    // 🔴 Why this deserves its own assertion rather than riding on the loop above: the loop
+    // proves the VALUE, this proves the REASON SURVIVES. The defect was not a wrong constant —
+    // it was a constant justified by a citation to a record that says the opposite. A future
+    // editor who re-reads only `input` can "fix" it back; one who reads why cannot.
+    expect(preset?.input).toContain('image')
+    expect(preset?.note ?? '').not.toMatch(/text-only/i)
   })
 
   it('is listed in the README (otherwise nobody can discover it)', () => {
