@@ -88,6 +88,41 @@ describe('aggregation', () => {
     expect(total.input).toBe(200)
     expect(total.billableInput).toBe(1000)
   })
+
+  it('🔴 descending order puts the NEWEST day first (owner 2026-10-27: 「倒序排列」)', () => {
+    /*
+     * The table used to ascend, so today's spend sat at the BOTTOM while the oldest day sat at the
+     * top — half a screen away from the 合计 it contributes to. A usage log is read newest-first.
+     *
+     * `YYYY-MM-DD` is lexicographically ordered by construction, so a plain string comparison is
+     * exact and needs no Date parsing (which could reorder days around midnight under a different
+     * timezone). This test pins the ORDER, not the sort mechanism.
+     */
+    const rows = summarize(
+      [
+        entry({ at: '2026-10-22T10:00:00+08:00' }),
+        entry({ at: '2026-10-25T10:00:00+08:00' }),
+        entry({ at: '2026-10-23T10:00:00+08:00' }),
+      ],
+      (e) => dayKey(new Date(e.at)),
+      'desc',
+    )
+    expect(rows.map((row) => row.key)).toEqual(['2026-10-25', '2026-10-23', '2026-10-22'])
+  })
+
+  it('🔴 ascending stays the default, so CHANNEL rows keep their alphabetical order', () => {
+    // The two groupings are not comparable: a channel key is a stable identity that people scan by
+    // name, a day key is a point in time. Reversing the channel list would scramble navigation.
+    const rows = summarize([entry({ channel: 'b' }), entry({ channel: 'a' })], (e) => e.channel)
+    expect(rows.map((row) => row.key)).toEqual(['a', 'b'])
+    // And the explicit 'asc' agrees with the default, so callers cannot be surprised by omission.
+    const explicit = summarize(
+      [entry({ channel: 'b' }), entry({ channel: 'a' })],
+      (e) => e.channel,
+      'asc',
+    )
+    expect(explicit.map((row) => row.key)).toEqual(['a', 'b'])
+  })
 })
 
 describe('entry validation', () => {

@@ -393,13 +393,31 @@ export async function readLedgerRange(
 
 /**
  * Group entries by a key and aggregate each group.
+ *
+ * ## Ordering (owner request 2026-10-27: 「倒序排列」)
+ *
+ * Rows come back **newest-first** for a time key (`YYYY-MM-DD`), because that is the order a
+ * reader scans a usage log in: today's spend is the question, last week's is history. The old
+ * ascending order put "2026-10-22" at the top while the newest day sat at the bottom, half a
+ * screen of scrolling away from the 合计 it belongs to.
+ *
+ * Sorting is applied PER GROUP KIND rather than generally, because the two groupings are not
+ * comparable: a channel key is an identity (stable, unordered — a reader looking for "Ollama"
+ * scans alphabetically), while a day key is a point in time (ordered, and meaning flows one way).
+ * Reversing channel rows would scramble a list people navigate by name.
+ *
+ * The comparison is a plain DESCENDING STRING compare, which is exact for `YYYY-MM-DD` because
+ * that format is lexicographically ordered by construction. No `Date` parsing: a locale or
+ * timezone conversion here could reorder days around midnight for no benefit.
  * @param entries - ledger entries already filtered to the range of interest.
  * @param by - grouping function (`channel`, `day`, …).
- * @returns one row per group, sorted by key for stable rendering.
+ * @param order - `'desc'` for newest-first (time keys); `'asc'` for stable identity keys.
+ * @returns one row per group.
  */
 export function summarize(
   entries: readonly LedgerEntry[],
   by: (entry: LedgerEntry) => string,
+  order: 'asc' | 'desc' = 'asc',
 ): LedgerSummary[] {
   const groups = new Map<string, LedgerAggregate>()
   for (const entry of entries) {
@@ -407,8 +425,9 @@ export function summarize(
     const existing = groups.get(key) ?? emptyAggregate()
     groups.set(key, addToAggregate(existing, entry))
   }
+  const direction = order === 'desc' ? -1 : 1
   return [...groups.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => (a < b ? -direction : a > b ? direction : 0))
     .map(([key, aggregate]) => ({ key, aggregate }))
 }
 

@@ -221,6 +221,61 @@ function fail(message: string): void {
 const variant = new URLSearchParams(window.location.search).get('variant') ?? 'list'
 const visibleChannels = variant === 'add' ? channels.slice(0, 2) : channels
 
+/**
+ * A 13-day usage table, newest-first, for verifying the row limit and 「查看更多」.
+ *
+ * 🔴 Why this fixture has to be LONGER than the limit: with the four-row fixture the cap never
+ * engages, so both the truncation and the button are unreachable — a screenshot would show the
+ * happy path and prove nothing about the feature. 13 rows is also deliberately 3 over the limit:
+ * 11 would test the same branch, but 13 makes the "还有 N 天" count awkward enough that an
+ * off-by-one is visible rather than plausible.
+ *
+ * Days are generated NEWEST-FIRST to match what the server now returns, so the fixture cannot
+ * disagree with the code about ordering.
+ */
+const dayStats: StatsResponse = (() => {
+  const rows = []
+  for (let i = 0; i < 13; i++) {
+    const day = 27 - i
+    const requests = 1000 + i * 137
+    rows.push({
+      key: `2026-10-${String(day).padStart(2, '0')}`,
+      label: `2026-10-${String(day).padStart(2, '0')}`,
+      tokensPerSecond: 150 + i,
+      firstTokenMs: 2900 + i * 10,
+      meanContext: 280_000 - i * 1000,
+      aggregate: {
+        requests,
+        failures: i,
+        unreported: i,
+        input: requests * 3000,
+        output: requests * 400,
+        cacheRead: requests * 30000,
+        cacheWrite: 0,
+        reasoning: requests * 200,
+        billableInput: requests * 33000,
+        total: requests * 33400,
+      },
+    })
+  }
+  return {
+    range: { from: null, to: null, group: 'day' },
+    rows,
+    total: {
+      requests: 31057, failures: 347, unreported: 347,
+      input: 136_900_000, output: 19_900_000, cacheRead: 7_831_900_000, cacheWrite: 0,
+      reasoning: 0, billableInput: 7_968_800_000, total: 7_988_800_000,
+    },
+    totalSpeed: 165.2,
+    totalFirstTokenMs: 2900,
+    meanContext: 260_000,
+    note: '',
+  }
+})()
+
+/** The stats the panel receives; `variant=days` swaps in a table long enough to hit the cap. */
+const activeStats = variant === 'days' ? dayStats : stats
+
 try {
   const root = createRoot(document.getElementById('root') as HTMLElement)
   root.render(
@@ -229,7 +284,7 @@ try {
       {...({
         useSettings: (selector: (snapshot: unknown) => unknown) => selector(settingsSnapshot),
         loadChannels: async () => ({ channels: visibleChannels, presets: [], model: { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' } }),
-        loadStats: async () => stats,
+        loadStats: async () => activeStats,
         probe: async () => ({ ok: true, ms: 117, responded: 'deepseek-flash' }),
         loadBalances: async () => ({ channels: balances }),
         setField: async () => true,
@@ -250,6 +305,16 @@ try {
     const buttons = [...document.querySelectorAll('button')]
     if (variant === 'add') {
       buttons.find((button) => button.textContent?.includes('添加渠道'))?.click()
+      return
+    }
+    if (variant === 'days') {
+      // The 用量 tab, then the 按天 grouping: the row limit only applies to a long day table, so
+      // the screenshot is only about the cap once both are selected.
+      buttons.find((button) => button.textContent?.includes('用量'))?.click()
+      window.setTimeout(() => {
+        const later = [...document.querySelectorAll('button')]
+        later.find((button) => button.textContent?.trim() === '按天')?.click()
+      }, 80)
       return
     }
     buttons.find((button) => button.textContent?.includes('查询余额'))?.click()

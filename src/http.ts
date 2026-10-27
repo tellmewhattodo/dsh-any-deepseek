@@ -563,8 +563,13 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
           : new Date(to.getTime() - DEFAULT_RANGE_DAYS * 24 * 60 * 60 * 1000))
         const group = url.searchParams.get('group') ?? 'channel'
         const entries: LedgerEntry[] = await readLedgerRange(deps.ledgerDir(), from, to)
+        /**
+         * 🔴 Day rows are NEWEST-FIRST (owner 2026-10-27: 「倒序排列」); channel rows stay
+         * alphabetical. The order is a property of the grouping, not a global preference — see
+         * `summarize` for why a time key and an identity key are not sorted the same way.
+         */
         const rows = group === 'day'
-          ? summarize(entries, (entry) => dayKey(new Date(entry.at)))
+          ? summarize(entries, (entry) => dayKey(new Date(entry.at)), 'desc')
           : summarize(entries, (entry) => entry.channel)
         /**
          * 🔴 Label each row with the channel's DISPLAY NAME, not its id.

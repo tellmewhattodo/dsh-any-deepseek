@@ -81,6 +81,22 @@ export const REPO_URL = 'https://github.com/tellmewhattodo/dsh-any-deepseek'
 type PanelTab = 'channels' | 'usage'
 
 /**
+ * How many usage rows are shown before 「查看更多」 (owner request 2026-10-27: 「只展示前10」).
+ *
+ * 🔴 This is a DISPLAY limit, not a data limit: `/stats` still returns every row it computed, and
+ * the 合计 footer is summed server-side over ALL of them. Both halves matter:
+ *  · showing 10 rows while summing all of them is the honest reading — "these are the 10 newest
+ *    days; this is the total across the whole range";
+ *  · summing only the visible 10 would silently shrink 合计 as the range grew, which turns a
+ *    total into a partial sum that looks exactly like a total.
+ *
+ * The number is 10 because the default range is 7 days, so the table normally shows everything
+ * and the limit only engages when the reader widens the range — which is exactly when a cap
+ * helps.
+ */
+const USAGE_ROW_LIMIT = 10
+
+/**
  * A channel id derived from a preset id, made unique against what already exists.
  *
  * The id is a configuration key, so it must match `^[a-z0-9][a-z0-9_-]*$`. Preset ids already do,
@@ -135,6 +151,15 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [balances, setBalances] = useState<Record<string, BalanceRow>>({})
   const [balancesLoading, setBalancesLoading] = useState(false)
   const [group, setGroup] = useState<'channel' | 'day'>('channel')
+  /**
+   * Whether the usage table shows every row or only the newest {@link USAGE_ROW_LIMIT}.
+   *
+   * Collapsed by default so opening 用量 answers "how much lately" at a glance instead of
+   * starting with a long scroll. Reset whenever the grouping changes: "expanded" was a decision
+   * about one specific table, and carrying it into a different grouping would silently show a
+   * different amount of data than the reader last chose.
+   */
+  const [showAllRows, setShowAllRows] = useState(false)
   /**
    * Which of the panel's two questions is on screen.
    *
@@ -378,6 +403,18 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     setRenaming(null)
     setRenameDraft('')
   }
+
+  /**
+   * The usage rows actually rendered.
+   *
+   * Truncation happens HERE, in the component, and not in `/stats` — the server keeps returning
+   * the full set so that (a) 合计 can be summed over everything, and (b) 「查看更多」 is instant
+   * rather than a second round-trip that might answer with a different range.
+   */
+  const allRows = stats?.rows ?? []
+  const visibleRows = showAllRows ? allRows : allRows.slice(0, USAGE_ROW_LIMIT)
+  /** Rows held back by the display limit; `0` means the table is complete. */
+  const hiddenRowCount = allRows.length - visibleRows.length
 
   return (
     <div className="ad-page">
@@ -813,14 +850,22 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             <button
               type="button"
               className={`ad-seg${group === 'channel' ? ' ad-seg-on' : ''}`}
-              onClick={() => setGroup('channel')}
+              onClick={() => {
+                setGroup('channel')
+                setShowAllRows(false)
+              }}
             >
               按渠道
             </button>
             <button
               type="button"
               className={`ad-seg${group === 'day' ? ' ad-seg-on' : ''}`}
-              onClick={() => setGroup('day')}
+              onClick={() => {
+                setGroup('day')
+                // Collapse on switch: "expanded" was a choice about the previous table. Keeping it
+                // would silently show a different amount of data than the reader last chose.
+                setShowAllRows(false)
+              }}
             >
               按天
             </button>
@@ -853,7 +898,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {stats.rows.map((row) => (
+                {visibleRows.map((row) => (
                   <tr key={row.key}>
                     {/*
                       The DISPLAY NAME, not the id. `key` is the row's identity (stable across
@@ -902,6 +947,46 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         )}
 
         {/*
+          🔴 「查看更多」 (owner request 2026-10-27: 「支持查看更多」).
+
+          Three states, and the wording of all of them matters:
+
+           · rows held back  → a button that says HOW MANY are hidden, so the click is informed;
+           · everything shown → a 收起 button, but only when the table is longer than the limit
+                               (otherwise it would be a control that does nothing);
+           · nothing shown    → nothing at all (the empty-state paragraph above is the message).
+
+          The count is stated because "查看更多" alone leaves the reader guessing whether there are
+          two more rows or forty — and those are different decisions about whether to widen the
+          range instead.
+
+          Rendered OUTSIDE the table: a <button> inside <tbody> is invalid HTML and browsers
+          relocate it, which would put the control in a place the code does not describe.
+        */}
+        {stats !== null && stats.total.requests > 0 && (
+          <div className="ad-rowActions">
+            {hiddenRowCount > 0 && (
+              <button
+                type="button"
+                className="ad-btn ad-btn-quiet"
+                onClick={() => setShowAllRows(true)}
+              >
+                查看更多（还有 {hiddenRowCount} 天）
+              </button>
+            )}
+            {hiddenRowCount === 0 && showAllRows && allRows.length > USAGE_ROW_LIMIT && (
+              <button
+                type="button"
+                className="ad-btn ad-btn-quiet"
+                onClick={() => setShowAllRows(false)}
+              >
+                收起（只看最近 {USAGE_ROW_LIMIT} 天）
+              </button>
+            )}
+          </div>
+        )}
+
+        {/*
           The counting convention is printed, not assumed. Harness token counts are disjoint, so
           a reader who sums the wrong columns concludes the input is being under-reported.
 
@@ -925,6 +1010,21 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           范围：<strong>近 7 天</strong>。更早的账本仍在磁盘上（按月的 JSONL，未删除），
           只是这个视图默认不展示——历史记录是花销的唯一凭据，删掉就回不来了。
         </p>
+        {/*
+          🔴 The display limit is DISCLOSED, because the alternative is a table that looks complete.
+
+          Showing 10 rows while 合计 covers all N creates exactly the confusion this sentence
+          removes: a reader who assumes the footer sums what they can see will conclude the visible
+          rows under-count. Stating both halves — "these are the newest 10" and "合计 is over all"
+          — is the only wording that survives being skimmed.
+        */}
+        {hiddenRowCount > 0 && (
+          <p className="ad-note">
+            下表只显示<strong>最新的 {visibleRows.length} 行</strong>；
+            <strong>合计</strong>仍是整个范围内全部 {allRows.length} 行的总和，不是可见这部分的。
+            点「查看更多」看其余 {hiddenRowCount} 行。
+          </p>
+        )}
       </section>
       )}
 

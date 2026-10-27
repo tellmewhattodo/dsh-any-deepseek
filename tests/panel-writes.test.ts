@@ -560,6 +560,52 @@ describe('面板文案 (EAP rewrite, owner 2026-10-23)', () => {
     // `0` would claim the relay produced nothing, which is a much stronger and usually false claim.
     expect(pageSource()).toContain('表示没测到，不是 0')
   })
+
+  it('🔴 shows at most 10 usage rows, with 查看更多 to reveal the rest (owner 2026-10-27)', () => {
+    /*
+     * Owner: 「倒序排列，只展示前10 支持查看更多」.
+     *
+     * The half of this that is easy to get WRONG is the footer: if 合计 summed only the visible
+     * rows it would shrink as the range grew, and a partial sum is indistinguishable from a total.
+     * So the assertions below cover both — the cap exists, and the total does NOT come from the
+     * capped list.
+     */
+    const page = pageSource()
+    // The limit is a named constant, not a magic number scattered through the render.
+    expect(page).toContain('USAGE_ROW_LIMIT = 10')
+    // Truncation applies to the RENDERED rows only...
+    expect(page).toContain('allRows.slice(0, USAGE_ROW_LIMIT)')
+    // ...while the footer keeps reading the server's total, summed over every row it computed.
+    expect(page).toContain('stats.total.requests')
+    expect(page).not.toContain('totalOf(visibleRows)')
+    // Both directions of the control exist.
+    expect(page).toContain('查看更多')
+    expect(page).toContain('收起')
+    // The hidden count is stated, so the click is informed rather than a guess.
+    expect(page).toContain('hiddenRowCount')
+    // And the limit is DISCLOSED in prose — an undisclosed cap reads as a complete table.
+    expect(page).toContain('合计')
+    expect(page).toMatch(/整个范围[^]*?全部/)
+  })
+
+  it('🔴 day rows are newest-first, and the order is a property of the grouping', () => {
+    /*
+     * 「倒序排列」. Asserted at the route, where the direction is chosen, so a future edit that
+     * flips it back to the default `asc` fails here rather than silently reordering the table.
+     *
+     * 🔴 The anchor is `summarize(entries, …)`, NOT `group === 'day'` — that string also appears
+     * in the label-resolution line further down, so slicing from the first hit produced an empty
+     * window and the test reported a failure about ITSELF rather than about the code. (Same family
+     * as the prose-vs-code trap in the rename test: a judgement must anchor on the thing it is
+     * judging.)
+     */
+    const server = readFileSync(join(process.cwd(), 'src', 'http.ts'), 'utf-8')
+    const dayCall = server.slice(server.indexOf('summarize(entries, (entry) => dayKey('))
+    expect(dayCall.slice(0, 80)).toContain("'desc'")
+    // Channel rows keep the ascending default — an identity key is scanned by name, not by time.
+    const channelCall = server.slice(server.indexOf('summarize(entries, (entry) => entry.channel)'))
+    expect(channelCall.slice(0, 60)).not.toContain("'desc'")
+  })
 })
 
 describe('what stays forbidden', () => {
