@@ -273,6 +273,44 @@ describe('GET /stats', () => {
     expect((response.body as { range: { from: string | null } }).range.from).not.toBeNull()
   })
 
+  it('🔴 EXCLUDES entries outside the range — the window actually filters, not just relabels', async () => {
+    // 🔴 The gap this closes (S142, 2026-10-29). Every range test above checks the range the
+    // response REPORTS; not one checked that an out-of-range entry is actually DROPPED. So the
+    // suite could not tell "narrows the view" from "narrows the view and also silently keeps
+    // everything". That distinction is the entire justification for the 7-day default being a
+    // display choice rather than a retention policy.
+    //
+    // ⚠️ Both entries live in the SAME MONTH file, and that is deliberate. `readLedgerRange` has
+    // TWO filters: a file-level one (month bucket, `usage-ledger.ts:367-371`) and an entry-level
+    // one (`:386-387`). A cross-month fixture is caught by the FILE filter, so it passes even when
+    // the entry filter is dead — verified: disabling `:386-387` left such a test green. Putting
+    // both entries in one month makes the ENTRY filter the only thing that can drop `drop-me`,
+    // which is the layer this test is about.
+    //
+    // ⚠️ Driven by an EXPLICIT range, never by the wall clock. The sibling fixture above was
+    // anchored to `now` to stop it expiring — correct for its own purpose, but it means no test
+    // exercises the window BOUNDARY any more. A literal range keeps this boundary deterministic
+    // forever, which is what a boundary test needs.
+    const dir = mkdtempSync(join(tmpdir(), 'any-deepseek-stats-window-'))
+    const inside = { at: '2026-03-10T10:00:00.000Z', channel: 'keep-me', model: 'm', ok: true, ms: 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }
+    const outside = { at: '2026-03-20T10:00:00.000Z', channel: 'drop-me', model: 'm', ok: true, ms: 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }
+    writeFileSync(
+      join(dir, 'usage-2026-03.jsonl'),
+      `${JSON.stringify(inside)}\n${JSON.stringify(outside)}\n`,
+      'utf8',
+    )
+    const { call } = mount({ ledgerDir: () => dir })
+    const response = await call(`${ROUTE_PREFIX}/stats`, {
+      query: 'from=2026-03-01T00:00:00Z&to=2026-03-15T00:00:00Z',
+    })
+    const rows = (response.body as { rows: Array<{ key: string }> }).rows
+    expect(rows.map((row) => row.key)).toContain('keep-me')
+    // 🔴 The assertion that was missing: an entry outside the window must be GONE, not merely
+    // un-highlighted. A "range" that keeps everything would pass every other test in this file.
+    // `drop-me` is in the same month file, so only the ENTRY-level bound can remove it.
+    expect(rows.map((row) => row.key)).not.toContain('drop-me')
+  })
+
   describe('🔴 rows carry the channel DISPLAY NAME (owner: 「统计要按显示名称来」)', () => {
     /** Write one ledger entry for `channelId` into a temp dir and serve stats from it. */
     const withLedger = async (
