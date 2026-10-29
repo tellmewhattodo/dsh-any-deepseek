@@ -440,6 +440,70 @@ describe('image input', () => {
     const images = await collectImages(imageRequest() as never, undefined)
     expect(images.size).toBe(0)
   })
+
+  // ── The TOOL half: `read_image` results ───────────────────────────────────────────────────────
+  //
+  // 🔴 The defect these pin (owner report 2026-10-29, located by S142): every image test above
+  // covers role `user`, and NOT ONE covered role `tool`. The tool branch called `textBlocks()`,
+  // which kept only `type === 'text'` — so the image half of a `read_image` result was dropped
+  // while its text envelope ("image/jpeg image, 1280x2774 px, 137505 bytes") sailed through.
+  //
+  // Why this is NOT the same bug as the user-image one: a user's attached screenshot went through
+  // `userContent()` and worked. That is why "发图能看到" was verified true by the owner while
+  // `read_image` results still arrived image-less. Two paths, one fixed.
+  //
+  // Why the code was wrong rather than the protocol: pi-ai's own `ToolResultMessage.content` is
+  // typed `(TextContent | ImageContent)[]` (dist/types.d.ts:430), and the host's own pi-ai adapter
+  // feeds tool messages through the SAME image converter as user messages
+  // (dsh-llm-pi-ai/lib/index.js:1410 → `toolResultOf(…, userContent(…))`). The capability was
+  // always there; only our delivery skipped it.
+
+  /** A harness TOOL message carrying one read_image result: a text envelope plus the image. */
+  function toolImageRequest(): unknown {
+    return {
+      provider: PROVIDER_ID,
+      model: ADVERTISED_MODEL_ID,
+      messages: [{
+        role: 'tool',
+        toolCallId: 'call_img_1',
+        content: [
+          { type: 'text', text: 'image/png image, 4x4 px, 10 bytes' },
+          {
+            type: 'image',
+            attachment: { attachmentId: 'att-tool-1', mediaType: 'image/png', bytes: 10, width: 4, height: 4, name: 'shot.png' },
+          },
+        ],
+      }],
+    }
+  }
+
+  it('🔴 delivers the image half of a tool result (read_image), not just its text envelope', () => {
+    const images = new Map([['att-tool-1', { data: 'QUJD', mediaType: 'image/png' }]])
+    const context = toPiContext(toolImageRequest() as never, images)
+    const tool = context.messages[0] as unknown as { role: string; content: Array<Record<string, unknown>> }
+    expect(tool.role).toBe('toolResult')
+    // The envelope must still be there — this is a replacement of the lossy helper, not of text.
+    expect(tool.content).toContainEqual({ type: 'text', text: 'image/png image, 4x4 px, 10 bytes' })
+    // 🔴 The assertion that was missing: the bytes must actually reach the wire.
+    expect(tool.content).toContainEqual({ type: 'image', data: 'QUJD', mimeType: 'image/png' })
+  })
+
+  it('🔴 a tool image whose bytes could not be read becomes a visible placeholder, not silence', () => {
+    const context = toPiContext(toolImageRequest() as never, new Map())
+    const tool = context.messages[0] as unknown as { content: Array<Record<string, unknown>> }
+    expect(tool.content.some((block) => block.type === 'image')).toBe(false)
+    const text = tool.content.map((block) => String(block.text ?? '')).join(' ')
+    expect(text).toContain('could not read its bytes')
+  })
+
+  it('collects bytes for an image inside a tool result too', async () => {
+    // `collectImages` already walked every message including tool ones — that half was never
+    // broken. Pinned so a future "optimisation" that skips tool messages cannot pass silently
+    // while the adapter goes back to paying IO for bytes nobody delivers.
+    const readImage = vi.fn(async () => ({ data: 'QUJD', mediaType: 'image/png' }))
+    const images = await collectImages(toolImageRequest() as never, readImage)
+    expect(images.get('att-tool-1')).toEqual({ data: 'QUJD', mediaType: 'image/png' })
+  })
 })
 
 describe('opencode session header', () => {

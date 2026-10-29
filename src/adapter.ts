@@ -392,11 +392,29 @@ export function toPiContext(options: GenerateOptions, images?: ImageBytes): PiCo
     }
     if (message.role === 'tool') {
       // Harness tool results carry no tool name: the id references the call, which names it.
+      //
+      // 🔴 Tool results go through the SAME converter as user messages, and that is the fix for a
+      // real owner-visible defect (2026-10-29). This branch used to call `textBlocks()`, which
+      // kept only `type === 'text'` — so a `read_image` result arrived as its text envelope
+      // ("image/jpeg image, 1280x2774 px, 137505 bytes") with the IMAGE ITSELF silently dropped.
+      // The model read a description of a picture it never received.
+      //
+      // Why the old helper looked defensible: its comment claimed "tool results carry no images
+      // once projected". That is not a rule of any layer. pi-ai's own `ToolResultMessage.content`
+      // is typed `(TextContent | ImageContent)[]` (pi-ai `dist/types.d.ts:430`), and the host's
+      // own pi-ai adapter converts tool messages with the same image path as user messages
+      // (`dsh-llm-pi-ai/lib/index.js:1410` → `toolResultOf(…, userContent(…))`). The capability
+      // existed at every layer; only this line refused to use it.
+      //
+      // 🔴 This is NOT the same bug as the user-image one it sat next to: a screenshot the user
+      // attached travelled `userContent()` and worked, which is why "发图能看到" was verified true
+      // while `read_image` stayed blind. Two delivery paths, and only one had ever been tested —
+      // every image case in the suite used role `user`.
       return {
         role: 'toolResult' as const,
         toolCallId: message.toolCallId,
         toolName: 'tool',
-        content: textBlocks(message.content),
+        content: userContent(message.content, images),
         isError: message.isError ?? false,
         timestamp: 0,
       }
@@ -487,16 +505,17 @@ function userContent(content: readonly unknown[], images?: ImageBytes): WireCont
   return out
 }
 
-/** Map harness content blocks to pi-ai text blocks (tool results carry no images once projected). */
-function textBlocks(content: readonly unknown[]): Array<{ type: 'text'; text: string }> {
-  const out: Array<{ type: 'text'; text: string }> = []
-  for (const block of content) {
-    const typed = block as { type?: string; text?: string }
-    if (typed.type === 'text' && typeof typed.text === 'string') out.push({ type: 'text', text: typed.text })
-  }
-  return out
-}
-
+/**
+ * 🔴 **DELETED: `textBlocks()` — do not reintroduce a text-only tool-result converter.**
+ *
+ * It mapped tool results to `{type:'text'}[]` only, justified by a comment claiming "tool results
+ * carry no images once projected". No layer enforces that: pi-ai types tool-result content as
+ * `(TextContent | ImageContent)[]` and the host converts tool messages through its user-message
+ * image path. The comment made a silent data loss look like a contract.
+ *
+ * The tool branch now uses {@link userContent}, so a `read_image` result reaches the model with
+ * its bytes — and an unreadable one becomes a visible placeholder instead of vanishing.
+ */
 /** Map pi-ai usage onto the harness's disjoint counters. */
 export function toTokenUsage(usage: AssistantMessage['usage']): TokenUsage {
   const total = usage.totalTokens ??

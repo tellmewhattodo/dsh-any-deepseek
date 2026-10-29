@@ -280,10 +280,25 @@ describe('GET /stats', () => {
       channels: ResolvedChannel[],
     ): Promise<Array<{ key: string; label?: string }>> => {
       const dir = mkdtempSync(join(tmpdir(), 'any-deepseek-stats-'))
+      // 🔴 The entry time must be RELATIVE to now, not a frozen literal.
+      //
+      // This fixture used a hard-coded `2026-10-22T10:00:00+08:00` while `/stats` defaults to a
+      // ROLLING seven-day window (`http.ts`: `now - 7 * 24h`). The entry therefore sat just inside
+      // the window until wall-clock time passed 2026-10-29T10:00 — at which moment these three
+      // assertions turned red with a message that pointed at display names, i.e. at nothing.
+      //
+      // It failed for the first time at 2026-10-29T10:22, ~22 minutes after the entry aged out.
+      // Nothing in the repo had changed; a green suite silently carried a deadline.
+      //
+      // A literal chosen "recently enough" just moves the deadline. Anchoring to `now` removes it:
+      // the fixture states the only thing the assertions actually need — an entry INSIDE the
+      // default window.
+      const at = new Date(Date.now() - 60_000).toISOString()
+      const month = at.slice(0, 7)
       writeFileSync(
-        join(dir, 'usage-2026-10.jsonl'),
+        join(dir, `usage-${month}.jsonl`),
         `${JSON.stringify({
-          at: '2026-10-22T10:00:00.000+08:00',
+          at,
           channel: channelId,
           model: 'deepseek-v4.1-flash',
           ok: true,
