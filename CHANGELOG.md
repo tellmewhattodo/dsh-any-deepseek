@@ -8,6 +8,37 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.25
+
+### 🔴 徽章在真浏览器里没出现 —— 根因不是 CSS，是**运行期依赖清单**（`0.0.24` 的缺陷）
+
+`0.0.24` 装了、重启了、代码确在 bundle 里，但槽位容器
+`<div data-slot="conversation.header.leading">` **是空的**，控制台零报错。按决策 22 的说法：
+**这正是最贵的一类失败 —— 所有「送达了吗」的判据全绿，而东西不在。**
+
+定位过程（三步，都是读数不是猜）：
+1. `document.querySelector('.ad-usageBadge')` ⇒ `null`；但槽位 div 存在 ⇒ **注册没被接受**；
+2. 我的注册代码确实在合并 bundle 里（`fetch` 那条 `/plugins/??…dsh-any-deepseek/client.js` 逐字命中）；
+3. 🔴 **`window.__DSH_BOOT__.entries` 是宿主自己的插件清单** —— 里面我这条写着：
+   `inject: ["dsh-api-remotes","dsh-client-connection","dsh-client-ui-settings","dsh-client-ui-slots"]`
+   **没有 `dsh-client-ui-conversation`**。
+
+⇒ `conversation.header.leading` 这个槽位是 **`dsh-client-ui-conversation` 注册的**。我的插件不等它，
+就在它之前调 `slots.register`，槽位还没声明 ⇒ 注册被丢弃、**静默**。
+这与决策 23 同族（`ctx.get` 回答"此刻在不在"，不是"挂完没"）：**声明进去 = 让它等，而不是抢。**
+
+**两处修**：
+- `package.json` → `dsh.client.inject` 加 `@deepseek-ai/dsh-client-ui-conversation`（运行期清单，宿主据此排序）；
+- `src/client/index.ts` → 模块级 `export const inject` 由 `['slots','configForms']` 改成 **`['slots']`**。
+  🔴 这一处是我自己写下的教训被自己违反：徽章的注释写着「不能依赖 configForms」，可模块级 inject 把
+  整个 `apply` 都压在 `configForms` 上，**耦合发生在注释看不见的上一层**。
+  `configForms` 改为只在面板分支里等待。
+
+### 门禁
+`typecheck` 双半 ✓ / **287 用例** ✓ / `build` ✓。
+**生效判据**：真浏览器里 `document.querySelector('.ad-usageBadge')` 非空且能读出数字
+（⛔ 不看回执、⛔ 不看「装上了」，那两个在 `0.0.24` 全绿而徽章不存在）。
+
 ## v0.0.24
 
 ### 左上角用量徽章：当天计费输入（owner 2026-11-01）

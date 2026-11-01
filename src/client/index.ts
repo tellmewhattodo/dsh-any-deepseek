@@ -57,8 +57,19 @@ import {
  */
 export const SETTINGS_NS = 'dsh-any-deepseek'
 
-/** Services this half waits for. */
-export const inject = ['slots', 'configForms']
+/**
+ * Services this half waits for.
+ *
+ * 🔴 `configForms` is deliberately NOT here, and that is a correction measured in a real browser
+ * (2026-11-01). It used to be, which meant the module waited for BOTH services before `apply` ran
+ * at all — so a settings service that was late or absent would take the header badge down with it,
+ * silently. That is exactly the coupling the badge's own doc comment says must not exist, made one
+ * level up where the comment could not see it.
+ *
+ * `configForms` is now awaited inside the panel branch only (`ctx.inject(['slots', 'configForms'])`
+ * below), so the two surfaces wait for their own dependencies and neither can strand the other.
+ */
+export const inject = ['slots']
 
 /** Channel configuration as the settings document stores it. */
 export interface ChannelWire {
