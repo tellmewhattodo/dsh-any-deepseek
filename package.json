@@ -1,6 +1,6 @@
 {
   "name": "dsh-any-deepseek",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "description": "One DeepSeek V4.1 Flash provider for DeepSeek Harness: paste a key per channel, switch channels manually, token usage booked per real upstream.",
   "license": "MIT",
   "repository": {
@@ -62,6 +62,7 @@
     "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.1 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/dsh-credentials": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.1 || ^0.2.1-rc.1",
@@ -87,6 +88,9 @@
     "@deepseek-ai/dsh-client-ui-slots": {
       "optional": true
     },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-credentials": {
       "optional": true
     },
@@ -106,6 +110,7 @@
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.1-rc.2",
     "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",

@@ -8,6 +8,64 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.24
+
+### 左上角用量徽章：当天计费输入（owner 2026-11-01）
+
+「在 dsh 左上角合适的地方放个用量图标，显示当天的输入统计，单位 M」。
+
+落点是宿主自己的 `conversation.header.leading` —— `kind:'single'`、`scope:'root'`，契约逐字写着
+*"Global navigation before the Session title, available without a Session"*
+（`dsh-client-ui-conversation/…/contract/slots.d.ts:242-247`）。**不新造位置**，用它留出的那个座位。
+渲染在 `.headerLeading` 里，即 header 第一行第一列（`grid-area:1/1`）。
+
+**口径 = 计费输入**（未命中 + 缓存读 + 缓存写），owner 选定。这与面板脚注「三者相加才是计费输入」
+是同一个数，所以徽章与面板**不会对「输入」各说一套**。
+🔴 为什么这必须明确：账本里三个输入口径在真实一天（2026-10-27）相差 **100 倍**
+（`input` 13.0M / `cacheRead` 1369.1M / `billableInput` 1382.2M）。选错不是四舍五入，是换了一个陈述。
+
+**纯展示、无交互**（owner 选定）：`<span>` 而非 `<button>`，无点击、无悬停卡、无焦点框。
+`title` 是唯一的补充说明，写明日期与口径 —— header 里一个光秃秃的 `1.38B` 两件事都说不清。
+
+**三态，且 `0.0M` 永远不是其中一态**：
+
+| 态 | 显示 | 为什么 |
+|---|---|---|
+| 首次读完成前 | 什么都不渲染 | 先画 `0.0M` 再改成真值，会让人相信一个从未读到的数 |
+| 读失败 / 今天无行 | `—` | 决策 45/47 纪律：缺读数不得渲染成 0。「花了 0」与「没问上」外观相同，只有一个可行动 |
+| 有值 | `1.38B` | `formatTokens` 与面板同一实现 |
+
+### 🔴 一条自我抓到的判据缺口（比功能本身值钱）
+
+三态规则第一版**只写在组件里**。我把「未知渲染成 0」这个缺陷注入进去 —— **12 条测试全绿**。
+⇒ 徽章最重要的那句承诺**没有任何测试站在它上面**。
+
+这是决策 57（边界用例必须落在唯一防线那层）的第二次照面。修法：把三态判定抽成纯函数
+`badgeState(value, failed)`，组件只负责渲染它定的态；补 4 条断言。重做负控制 ⇒ **精确红 1 条**
+（`expected { kind:'value', tokens:+0 } to deeply equal { kind:'unknown' }`）。
+
+### 🔴 修掉第二条时间炸弹（今天正好引爆）
+
+全量跑测时 `usage-ledger.test.ts` 红 1 条，`ENOENT … usage-2026-10.jsonl`。
+
+真因与本次改动无关：测试读**硬编码**的 `ledgerFileName('2026-10')`，而 `appendLedgerEntry` 用默认
+`new Date()` 写 ⇒ 写入落在**运行时那个月**。它在 10 月里一直绿，**2026-11-01 零点起必然红**。
+
+这与决策 56（`/stats` 固件写死日期 vs 滚动窗口）是**同一个病**：绿着的套件带着截止日期。
+修法同样锚到显式时刻（`now` 传进去，读写同一个 `monthKey(now)`），⛔ 不是换一个月字面量。
+
+### 依赖：新增 optional peer `dsh-client-ui-conversation`
+
+`conversation.header.leading` 这个 slot 名**只在该包的 client 入口里**增强进 `SlotMap`
+（`contract/slots.d.ts:184`）。不加它，该名字在 typecheck 里会报一串 `settings.*` + `root` 的候选，
+读起来像"这个 slot 不存在"，其实只是**本程序里没声明**。
+按既有先例（`ui-settings` / `ui-slots`）设为 **optional peer + devDep 钉 `0.2.1-rc.2`**。
+
+### 门禁
+
+`typecheck` 双半 ✓ / **287 用例**（275 → 287）✓ / `build` ✓ / `pack-check` ✓。
+负控制：口径改 `input` ⇒ 红 2 条（读数正是 100 倍差）；三态改成「未知→0」⇒ 红 1 条。
+
 ## v0.0.23
 
 ### 补一格测试：区间**外**的记录真的被丢掉（S142 指出）

@@ -26,9 +26,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 // so that exact subpath must be imported for the client half to compile — a `paths` entry alone
 // does not bring an augmentation into the program.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// 🔴 Same rule, one level down: `conversation.header.leading` — and every other
+// `conversation.*` slot — enters the SlotMap ONLY through this package's *client* entry. Without
+// this line the slot name fails to typecheck with a list of `settings.*` names and `root`, which
+// reads like "that slot does not exist" when in fact it is merely undeclared in this program.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { SettingsPage, SettingsPageInjected, type JsonValue } from './SettingsPage.js'
+import { UsageBadge, type UsageBadgeInjected } from './UsageBadge.js'
 import {
   fetchBalances,
   fetchChannels,
@@ -74,6 +80,43 @@ export interface SettingsWire {
 }
 
 export function apply(ctx: ClientContext): void {
+  // ── The header badge ────────────────────────────────────────────────────────────────────────
+  //
+  // 🔴 Registered OUTSIDE `whileServed`, and that is the whole point of this block.
+  //
+  // The panel below waits for the settings document, because it edits that document (decision 22:
+  // without it the panel used to vanish with no trace). The badge has nothing to do with settings —
+  // it reads this plugin's own `/stats` route. Putting it inside `whileServed` would make a late,
+  // absent or refused settings service take the badge down too, and the failure would be invisible:
+  // the bundle executes, no error is logged, and the header simply has one fewer ornament.
+  //
+  // `conversation.header.leading` is the host's own seat for exactly this: `kind:'single'`,
+  // `scope:'root'`, documented as "Global navigation before the Session title, available without a
+  // Session" (`dsh-client-ui-conversation/lib/types/client/contract/slots.d.ts:242-247`). Nothing
+  // else in this profile occupies it.
+  ctx.inject(['slots'], (scope: ClientContext) => {
+    scope.effect(
+      () =>
+        scope.slots.register(
+          {
+            name: 'conversation.header.leading',
+            inject: (): UsageBadgeInjected => ({
+              loadToday: (): Promise<StatsResponse> => {
+                // Ask for TODAY only, explicitly. Relying on the route's 7-day default and then
+                // picking the row out of it would make the badge change meaning if that default
+                // ever moved — and the default exists for the panel's table, not for this.
+                const start = new Date()
+                start.setHours(0, 0, 0, 0)
+                return fetchStats('day', start.toISOString())
+              },
+            }),
+          },
+          UsageBadge,
+        ),
+      'any-deepseek header usage badge',
+    )
+  })
+
   ctx.inject(['slots', 'configForms'], (scope: ClientContext) => {
     const form = scope.configForms.get<SettingsWire>(SETTINGS_NS)
 

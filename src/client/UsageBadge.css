@@ -1,0 +1,62 @@
+/**
+ * UsageBadge.css — the header badge's own styles.
+ *
+ * Kept in its own file, imported by the component, because the build inlines CSS imports into the
+ * bundle (`--loader:.css=text`). The panel's stylesheet is not reused on purpose: the badge lives
+ * in the host's header, not inside the panel, and a shared sheet would tie two unrelated surfaces
+ * together so that touching one breaks the other.
+ *
+ * ## Sizing follows the host, not our taste
+ *
+ * The host's header leading area is `display:flex; align-items:center; gap:8px`
+ * (`ConversationRoot.module.css`: `.headerLeading`). So this contributes one flex item and does not
+ * set its own margins. Height is left to the line box: the header row is 30px tall
+ * (`.titleRow{min-height:30px}`), so a 20px line-height sits inside it without stretching it.
+ *
+ * ## Colour comes from the host's tokens
+ *
+ * `--dsw-alias-*` are the host's own aliases, the same family its crumbs and captions use. Hard-coded
+ * greys would look correct in one theme and vanish in the other; three of the panel's earlier colour
+ * defects were exactly this.
+ */
+
+.ad-usageBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* No padding/background: this is an ornament in a drag region, not a button. Giving it a hit
+     area would invite clicks that the owner explicitly did not ask for. */
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+  /* Tabular figures stop the number's width from jittering as it grows during a session, which
+     would drag everything to its right back and forth. */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* The header is `data-window-drag`; text selection there would fight the drag affordance. */
+  user-select: none;
+}
+
+/* The dot is the "this is a live reading" cue. It is `aria-hidden` in the markup because the
+   number and the title already say everything the dot implies. */
+.ad-usageDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  flex: none;
+}
+
+.ad-usageNum {
+  font-weight: 500;
+}
+
+/* An unreadable figure is dimmed rather than hidden: the seat stays occupied so the header does
+   not reflow when the route comes back. */
+.ad-usageBadge[title^="今天还没有读到"] {
+  opacity: 0.6;
+}

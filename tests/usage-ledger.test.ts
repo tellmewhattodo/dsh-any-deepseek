@@ -173,8 +173,18 @@ describe('file layout', () => {
 
   it('creates the directory on first write and appends one line', async () => {
     const nested = join(dir, 'deep', 'nested')
-    expect(await appendLedgerEntry(nested, entry())).toBe(true)
-    const text = await readFile(join(nested, ledgerFileName('2026-10')), 'utf8')
+    // 🔴 The month file is derived from the entry's own timestamp, NOT from a literal.
+    //
+    // This assertion used to read `ledgerFileName('2026-10')` while `appendLedgerEntry` defaulted
+    // to `new Date()` — so the write landed in whatever month the suite happened to run in, and the
+    // read looked in October. It passed for as long as the wall clock was in October and failed at
+    // 2026-11-01T00:00 with an ENOENT that names a path, not a time.
+    //
+    // Decision 56 in the trajectory, met again (the `/stats` fixture had the same shape): a green
+    // test with a deadline in it. Anchor to the value under test instead of moving the literal.
+    const now = new Date('2026-10-19T10:00:00+08:00')
+    expect(await appendLedgerEntry(nested, entry(), now)).toBe(true)
+    const text = await readFile(join(nested, ledgerFileName(monthKey(now))), 'utf8')
     expect(text.trim().split('\n')).toHaveLength(1)
   })
 
