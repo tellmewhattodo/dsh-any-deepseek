@@ -8,6 +8,36 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.26
+
+### 🔴 真因：注册 slot 前必须先等**父 slot** 存在（`0.0.25` 也错了）
+
+`0.0.25` 的假设（把 `dsh-client-ui-conversation` 加进 `dsh.client.inject`）**被证伪**：
+真浏览器里 `__DSH_BOOT__.entries` 确认 inject 已含该包、bundle rev 也换了新值、代码逐字在跑，
+而 `<div data-slot="conversation.header.leading">` **依然是空的**。
+
+**真因（宿主源码 + 宿主自己的插件双重佐证）**：
+
+某个 slot key **只有在父注册声明它之后才存在**。宿主在 `registerHeader()` 的 `children` 表里声明
+`conversation.header.leading`（`dsh-client-ui-conversation/lib/client.js:19834-19846`）。
+对一个注册表**还没见过**的 key 调 `slots.register`，**会被接受然后丢弃** —— 静默、无 console 报错，
+而槽位 `<div data-slot>` 仍然渲染（空的），因为**父**是存在的。
+⇒ 这解释了为什么我先前每一条判据都绿：容器在，只是里面没人。
+
+**正解**：`ctx.slots.inject('<父 slot>', () => ctx.slots.register(...))` —— 先等父 slot 注册完成再注册子。
+这不是我发明的顺序：宿主自己的 `dsh-client-ui-open-in-app` 就写着
+`ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({…}))`；
+`dsh-client-ui-settings-plugins` 对 `settings.section` 也是同款。
+**抄一个被验证过的宿主模式，好过自己发明顺序。**
+
+🔴 **这条与决策 23 是同一个病，作用对象不同**：23 说的是「声明**服务**，让 cordis 等而不是抢」；
+这条是「声明**父 slot**，让 slots 等而不是抢」。**我写了 23 的判据，却没把它迁移到 slot 上。**
+
+### 门禁
+`typecheck` 双半 ✓ / **287 用例** ✓ / `build` ✓。
+**生效判据（唯一）**：真浏览器里 `.ad-usageBadge` 存在**且**能读出数字。
+⛔ 「装上了」「版本对了」「代码在 bundle 里」这三条在 `0.0.24` 与 `0.0.25` **都绿过，而徽章不存在**。
+
 ## v0.0.25
 
 ### 🔴 徽章在真浏览器里没出现 —— 根因不是 CSS，是**运行期依赖清单**（`0.0.24` 的缺陷）

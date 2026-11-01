@@ -105,24 +105,43 @@ export function apply(ctx: ClientContext): void {
   // `scope:'root'`, documented as "Global navigation before the Session title, available without a
   // Session" (`dsh-client-ui-conversation/lib/types/client/contract/slots.d.ts:242-247`). Nothing
   // else in this profile occupies it.
+  //
+  // 🔴 `slots.inject('conversation.header', …)` FIRST — and this is the fix for 0.0.24/0.0.25 both
+  // rendering nothing while every install check stayed green.
+  //
+  // A slot key only exists once its PARENT registration declared it as a child: the host declares
+  // `conversation.header.leading` inside `registerHeader()`'s `children` table
+  // (`dsh-client-ui-conversation/lib/client.js:19834-19846`). Calling `slots.register` for a key the
+  // registry has not seen yet is accepted and DROPPED — silently, no console error, and the slot's
+  // `<div data-slot>` still renders (empty) because the parent exists. That is why every check I ran
+  // first passed: the container was there, only its occupant was missing.
+  //
+  // `slots.inject(name, fn)` is the wait: `fn` runs once that slot is registered. It is the same
+  // discipline as decision 23 (declare the service so cordis waits instead of racing), applied to
+  // SLOTS rather than services — and the host's own `settings-plugins` does exactly this
+  // (`ctx.slots.inject("settings.section", () => ctx.slots.register(…))`,
+  // `dsh-client-ui-settings-plugins/lib/client.js:201`). Copying a proven host pattern beats
+  // inventing an order.
   ctx.inject(['slots'], (scope: ClientContext) => {
     scope.effect(
       () =>
-        scope.slots.register(
-          {
-            name: 'conversation.header.leading',
-            inject: (): UsageBadgeInjected => ({
-              loadToday: (): Promise<StatsResponse> => {
-                // Ask for TODAY only, explicitly. Relying on the route's 7-day default and then
-                // picking the row out of it would make the badge change meaning if that default
-                // ever moved — and the default exists for the panel's table, not for this.
-                const start = new Date()
-                start.setHours(0, 0, 0, 0)
-                return fetchStats('day', start.toISOString())
-              },
-            }),
-          },
-          UsageBadge,
+        scope.slots.inject('conversation.header', () =>
+          scope.slots.register(
+            {
+              name: 'conversation.header.leading',
+              inject: (): UsageBadgeInjected => ({
+                loadToday: (): Promise<StatsResponse> => {
+                  // Ask for TODAY only, explicitly. Relying on the route's 7-day default and then
+                  // picking the row out of it would make the badge change meaning if that default
+                  // ever moved — and the default exists for the panel's table, not for this.
+                  const start = new Date()
+                  start.setHours(0, 0, 0, 0)
+                  return fetchStats('day', start.toISOString())
+                },
+              }),
+            },
+            UsageBadge,
+          ),
         ),
       'any-deepseek header usage badge',
     )
