@@ -91,59 +91,91 @@ export interface SettingsWire {
 }
 
 export function apply(ctx: ClientContext): void {
-  // ── The header badge ────────────────────────────────────────────────────────────────────────
+  // ── The sidebar usage badge ─────────────────────────────────────────────────────────────────
   //
   // 🔴 Registered OUTSIDE `whileServed`, and that is the whole point of this block.
   //
   // The panel below waits for the settings document, because it edits that document (decision 22:
   // without it the panel used to vanish with no trace). The badge has nothing to do with settings —
   // it reads this plugin's own `/stats` route. Putting it inside `whileServed` would make a late,
-  // absent or refused settings service take the badge down too, and the failure would be invisible:
-  // the bundle executes, no error is logged, and the header simply has one fewer ornament.
+  // absent or refused settings service take the badge down too, and the failure would be invisible.
   //
-  // `conversation.header.leading` is the host's own seat for exactly this: `kind:'single'`,
-  // `scope:'root'`, documented as "Global navigation before the Session title, available without a
-  // Session" (`dsh-client-ui-conversation/lib/types/client/contract/slots.d.ts:242-247`). Nothing
-  // else in this profile occupies it.
+  // ## Why `sidebar.footer.action` and not the conversation header (owner decision 2026-11-01)
   //
-  // 🔴 `slots.inject('conversation.header', …)` FIRST — and this is the fix for 0.0.24/0.0.25 both
-  // rendering nothing while every install check stayed green.
+  // The first seat was `conversation.header.leading` (`kind:'single'`, `scope:'root'`). Owner's
+  // ruling: 「你这个放会话标题了不太合适，能不能放全局一些的地方，数量没问题」 — measured, that seat
+  // sits at x=300,y=10, immediately right of the Session title. The number counts the WHOLE
+  // machine's day, but sitting beside a Session title it reads as THAT Session's usage. The figure
+  // was never wrong; the seat said the wrong thing about it.
   //
-  // A slot key only exists once its PARENT registration declared it as a child: the host declares
-  // `conversation.header.leading` inside `registerHeader()`'s `children` table
-  // (`dsh-client-ui-conversation/lib/client.js:19834-19846`). Calling `slots.register` for a key the
-  // registry has not seen yet is accepted and DROPPED — silently, no console error, and the slot's
-  // `<div data-slot>` still renders (empty) because the parent exists. That is why every check I ran
-  // first passed: the container was there, only its occupant was missing.
+  // The replacement is a genuine global seat, verified against the live registry rather than a doc:
+  // `specOf('sidebar.footer.action')` → `{ kind:'list', scope:'root' }`, one existing occupant
+  // (`cordis-panel`, a host plugin) ⇒ it is a real, additive, root-scoped seat that does not depend
+  // on a Session being open. Being a `list`, it needs `id` + `order`; without an `id` the register
+  // call throws (`dsh-client-ui-slots/lib/index.js:181-186`).
   //
-  // `slots.inject(name, fn)` is the wait: `fn` runs once that slot is registered. It is the same
-  // discipline as decision 23 (declare the service so cordis waits instead of racing), applied to
-  // SLOTS rather than services — and the host's own `settings-plugins` does exactly this
-  // (`ctx.slots.inject("settings.section", () => ctx.slots.register(…))`,
-  // `dsh-client-ui-settings-plugins/lib/client.js:201`). Copying a proven host pattern beats
-  // inventing an order.
+  // ⚠️ Rejected alternatives, with the measurement that rejected each:
+  //  · `shell.bottom` — also global and `single`/`root`, and a probe showed it does NOT push the
+  //    frame (813→813), but it is the window's bottom edge with no current occupant and no proven
+  //    precedent. Kept as the fallback if this seat is ever removed.
+  //  · `sidebar.brand.mark` / `sidebar.brand.name` — the literal top-left corner, but both are
+  //    `single` and already occupied by the host's own logo and wordmark. Taking either would mean
+  //    shadowing host UI, which this plugin must not do.
+  //
+  // ## 🔴 `slots.inject(<the key we register INTO>)` — never the parent key
+  //
+  // This is the fix for 0.0.24/0.0.25/0.0.26 all rendering nothing while every install check stayed
+  // green. Waiting on a parent that is declared one step EARLIER means `fn` runs while the child key
+  // still does not exist, and `register()` throws:
+  //
+  //   Uncaught Error: slot "conversation.header.leading" is not declared
+  //     (a parent entry's children table must declare it)
+  //
+  // ⚠️ **Why three releases missed it**: that throw escapes a cordis effect, so it is UNCAUGHT — it
+  // never reaches `console.error`/`console.warn`. A console-intercept probe therefore stays silent
+  // and reads as "no error at all". Only `window.onerror` sees it; only reading the live registry
+  // shows the truth: the slot's spec EXISTS (so the `<div data-slot>` renders) while its entries
+  // array is EMPTY. "Container present" and "occupant present" are two different facts, and three
+  // investigations mistook the first for proof of the second.
+  //
+  // The rule is uniform in the host: all 47 `slots.inject(` call sites inject the very key they then
+  // register into (e.g. `dsh-client-ui-settings-plugins/lib/client.js:201`). Same discipline as
+  // decision 23 (declare the service so cordis waits instead of racing), applied to SLOTS.
   ctx.inject(['slots'], (scope: ClientContext) => {
     scope.effect(
       () =>
-        scope.slots.inject('conversation.header', () =>
-          scope.slots.register(
-            {
-              name: 'conversation.header.leading',
-              inject: (): UsageBadgeInjected => ({
-                loadToday: (): Promise<StatsResponse> => {
-                  // Ask for TODAY only, explicitly. Relying on the route's 7-day default and then
-                  // picking the row out of it would make the badge change meaning if that default
-                  // ever moved — and the default exists for the panel's table, not for this.
-                  const start = new Date()
-                  start.setHours(0, 0, 0, 0)
-                  return fetchStats('day', start.toISOString())
-                },
-              }),
-            },
-            UsageBadge,
-          ),
-        ),
-      'any-deepseek header usage badge',
+        scope.slots.inject('sidebar.footer.action', () => {
+          try {
+            return scope.slots.register(
+              {
+                name: 'sidebar.footer.action',
+                // `list` slots are addressed by id; `order` keeps us at the end of the row.
+                id: 'any-deepseek-usage',
+                order: 90,
+                inject: (): UsageBadgeInjected => ({
+                  loadToday: (): Promise<StatsResponse> => {
+                    // Ask for TODAY only, explicitly. Relying on the route's 7-day default and then
+                    // picking the row out of it would make the badge change meaning if that default
+                    // ever moved — and the default exists for the panel's table, not for this.
+                    const start = new Date()
+                    start.setHours(0, 0, 0, 0)
+                    return fetchStats('day', start.toISOString())
+                  },
+                }),
+              },
+              UsageBadge,
+            )
+          } catch (error) {
+            // 🔴 A refused registration must be VISIBLE. Each of the three failed releases cost a
+            // publish-install-restart cycle precisely because this failure was silent: cordis throws
+            // the effect error as uncaught, no console line is printed, the bundle executes normally,
+            // and the UI simply has one fewer ornament. This does not fix anything — it makes the
+            // next occurrence diagnosable in one look instead of four restarts.
+            console.error('[dsh-any-deepseek] sidebar usage badge registration refused:', error)
+            throw error
+          }
+        }),
+      'any-deepseek sidebar usage badge',
     )
   })
 

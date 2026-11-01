@@ -44,12 +44,38 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-// 🔴 The `conversation.header.leading` slot name exists in the SlotMap only when this package's
-// client entry is in the program. See the longer note in `index.ts`.
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { StatsResponse } from './panel-api.js'
 import { formatTokens } from './panel-api.js'
 import './UsageBadge.css'
+
+/**
+ * The sidebar footer seat — declared here because the pinned host types do not contain it.
+ *
+ * 🔴 Why a local declaration is legitimate rather than a fabrication: `SlotMap` in
+ * `@deepseek-ai/dsh-client-ui-slots` is an **empty table merged by each slot owner** (its own doc
+ * comment says so, `lib/types/index.d.ts:16-18`). The sidebar is declared by
+ * `@deepseek-ai/dsh-client-ui-sidebar`, a **host runtime package this repo does not pin** — the
+ * profile runs host 1.106.0 while our devDependencies hold 0.2.1-rc.2, so its augmentation is not
+ * part of this program.
+ *
+ * ⚠️ **The shape is measured, not invented**: `specOf('sidebar.footer.action')` in the live browser
+ * returned `{ kind: 'list', scope: 'root' }`, with `cordis-panel` as its existing occupant. A `list`
+ * slot requires `options.id` at register time (`dsh-client-ui-slots/lib/index.js:181-186`), which is
+ * why the registration in `index.ts` passes one.
+ *
+ * ⛔ **Known staleness risk, stated rather than hidden**: if the host changes this seat's kind or
+ * scope, this table goes stale SILENTLY — the type keeps compiling while the runtime rejects the
+ * entry. That is exactly why the seat is also verified against the live registry (decision 68), and
+ * why a refused registration now logs (decision 66) instead of vanishing.
+ */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'sidebar.footer.action': {
+      kind: 'list'
+      scope: 'root'
+    }
+  }
+}
 
 /** What the plugin's `apply` hands this component. */
 export interface UsageBadgeInjected {
@@ -124,7 +150,7 @@ export function badgeState(value: number | null, failed: boolean): BadgeState {
 }
 
 /** Badge props: the slot's runtime share plus this plugin's injected face. */
-export type UsageBadgeProps = PropsRuntime<'conversation.header.leading'> & UsageBadgeInjected
+export type UsageBadgeProps = PropsRuntime<'sidebar.footer.action'> & UsageBadgeInjected
 
 /**
  * The header badge.
