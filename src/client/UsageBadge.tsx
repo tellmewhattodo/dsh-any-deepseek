@@ -83,8 +83,34 @@ export interface UsageBadgeInjected {
   loadToday: () => Promise<StatsResponse>
 }
 
-/** Refresh cadence. Slow on purpose — see the note at the call site. */
-export const USAGE_BADGE_REFRESH_MS = 60_000
+/**
+ * Refresh cadence: **five minutes**.
+ *
+ * 🔴 Owner set this on 2026-11-01 ("每5分钟刷新一次值"). It replaces the earlier one-minute value,
+ * which was my own guess. The trade is stated rather than hidden: a figure can be up to five
+ * minutes stale, and in exchange the badge stops being a meaningful load on a route that reads the
+ * whole month's ledger files on every call.
+ *
+ * ⚠️ Why this is a named constant and not a literal at the call site: it is the ONE number that
+ * decides how stale the screen is, and a reader asking "how current is this?" must be able to find
+ * it without reading the component body. It is asserted in `tests/UsageBadge.test.ts` so that a
+ * future edit cannot quietly change the cadence the owner asked for.
+ */
+export const USAGE_BADGE_REFRESH_MS = 300_000
+
+/**
+ * The visible label, in words, so the number is not ambiguous.
+ *
+ * 🔴 Owner asked for this on 2026-11-01 ("显示的内容多几个字，注明是今日 token 消耗"): a bare
+ * `1465.2M` beside an account row could be read as anything — balance, quota, spend, requests.
+ * A figure whose meaning has to be guessed is worse than no figure, because it invites a wrong
+ * conclusion at a glance.
+ *
+ * ⚠️ It says 消耗 (consumed) while the tooltip and the ledger say 计费输入 (billable input). Both
+ * name the SAME quantity — see the module note: uncached + cache read + cache write. 消耗 is the
+ * reader-facing word, 计费输入 is the accounting term; they are not two conventions.
+ */
+export const USAGE_BADGE_LABEL = '今日 Token 消耗'
 
 /**
  * Extract today's billable input from a stats response.
@@ -194,9 +220,9 @@ export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement |
   useEffect(() => {
     alive.current = true
     void read()
-    // 🔴 One minute, not one second: this is a header ornament, and every tick is a request
-    // against a route that reads the whole month's ledger files. A number that is at most a
-    // minute stale is worth far more than four hundred extra file reads an hour.
+    // 🔴 Five minutes (owner, 2026-11-01), not one second: this is a sidebar ornament, and every
+    // tick is a request against a route that reads the whole month's ledger files. A figure that is
+    // at most five minutes stale is worth far more than the extra file reads a faster poll costs.
     const timer = setInterval(() => { void read() }, USAGE_BADGE_REFRESH_MS)
     return () => {
       alive.current = false
@@ -212,6 +238,7 @@ export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement |
     return (
       <span className="ad-usageBadge" title="今天还没有读到用量（或用量接口暂时不可用）">
         <span className="ad-usageDot" aria-hidden="true" />
+        <span className="ad-usageLabel">{USAGE_BADGE_LABEL}</span>
         <span className="ad-usageNum">—</span>
       </span>
     )
@@ -222,6 +249,9 @@ export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement |
       title={`${day} 计费输入 ${state.tokens.toLocaleString()} tokens（未命中 + 缓存读 + 缓存写）`}
     >
       <span className="ad-usageDot" aria-hidden="true" />
+      {/* Label BEFORE the figure: the owner reads "今日 Token 消耗 1465.2M" left to right, and a
+          label after the number would read as a unit suffix (as in "1465.2M tokens consumed"). */}
+      <span className="ad-usageLabel">{USAGE_BADGE_LABEL}</span>
       <span className="ad-usageNum">{formatTokens(state.tokens)}</span>
     </span>
   )

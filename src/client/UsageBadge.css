@@ -24,8 +24,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* No padding/background: this is an ornament in a drag region, not a button. Giving it a hit
-     area would invite clicks that the owner explicitly did not ask for. */
+  /* No padding/background: this is an ornament, not a button. Giving it a hit area would invite
+     clicks that the owner explicitly did not ask for. */
   padding: 0;
   background: none;
   border: none;
@@ -36,7 +36,12 @@
      would drag everything to its right back and forth. */
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  /* The header is `data-window-drag`; text selection there would fight the drag affordance. */
+  /* 🔴 `min-width:0` is what actually lets `.ad-usageLabel` ellipsis. Without it a flex item
+     refuses to shrink below its content, so the label's `text-overflow` rule never fires and the
+     badge instead overflows the 256px footer row. */
+  min-width: 0;
+  max-width: 100%;
+  /* This is a display ornament; text selection would fight the surrounding row. */
   user-select: none;
 }
 
@@ -53,9 +58,32 @@
 
 .ad-usageNum {
   font-weight: 500;
+  /* The figure must not be the thing that gets squeezed when the sidebar narrows: the label may
+     elide, the number may not — a truncated number is a wrong number, a truncated label is still
+     a readable label. */
+  flex: none;
 }
 
-/* An unreadable figure is dimmed rather than hidden: the seat stays occupied so the header does
+/**
+ * The visible label ("今日 Token 消耗").
+ *
+ * 🔴 Owner asked for it on 2026-11-01 so the figure cannot be misread as balance or quota.
+ *
+ * ⚠️ **It is allowed to shrink and elide, the number is not.** The seat is the sidebar footer —
+ * 256px wide with the account row in it — so a long label plus a long figure can genuinely run out
+ * of room. Clipping the LABEL degrades honestly (the dot + tooltip still say what it is); clipping
+ * the NUMBER would show a figure that is not the figure.
+ */
+.ad-usageLabel {
+  font-weight: 400;
+  opacity: 0.85;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An unreadable figure is dimmed rather than hidden: the seat stays occupied so the footer does
    not reflow when the route comes back. */
 .ad-usageBadge[title^="今天还没有读到"] {
   opacity: 0.6;

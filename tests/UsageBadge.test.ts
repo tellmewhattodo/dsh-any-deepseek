@@ -16,7 +16,13 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { badgeState, localDayKey, pickTodayBillable } from '../src/client/UsageBadge.js'
+import {
+  badgeState,
+  localDayKey,
+  pickTodayBillable,
+  USAGE_BADGE_LABEL,
+  USAGE_BADGE_REFRESH_MS,
+} from '../src/client/UsageBadge.js'
 import type { StatsResponse } from '../src/client/panel-api.js'
 
 /** A stats response with one day row, built so the three input columns are far apart. */
@@ -113,8 +119,41 @@ describe('badgeState — the three-state rule', () => {
   })
 })
 
-describe('localDayKey — the offset rule', () => {
-  it('🔴 uses the LOCAL date, not the UTC date', () => {
+describe('owner two presentation demands (2026-11-01)', () => {
+  // 🔴 These two are here because both are DECISIONS THE OWNER MADE, not my preferences, and both
+  // are the kind that decays silently: a label can be dropped in a refactor and the badge still
+  // works (it just becomes ambiguous again); a cadence can drift back to a literal and nothing
+  // fails. Pinning them means a future edit has to argue with a red test rather than with memory.
+
+  it('refreshes every FIVE minutes — the owner asked for 5, not "roughly often"', () => {
+    // Stated as an exact value on purpose. `>= 60_000` would pass for the OLD one-minute cadence
+    // too, so an inequality here would be a criterion that cannot distinguish what it is judging.
+    expect(USAGE_BADGE_REFRESH_MS).toBe(300_000)
+  })
+
+  it('🔴 the label is visibly present and names the quantity', () => {
+    // Constraint from the seat, not taste: the sidebar footer is 256px wide and shares its row with
+    // the account control, so the label has to stay short enough to coexist with the figure. Ten
+    // characters is already generous — `今日 Token 消耗` is 9 visual units. This is a budget, not a
+    // preference, and it is why the label is a constant rather than free text at the call site.
+    expect(USAGE_BADGE_LABEL.length).toBeGreaterThan(0)
+    expect(USAGE_BADGE_LABEL.length).toBeLessThanOrEqual(14)
+    // It must name BOTH halves of the meaning: what is counted (Token) and over what period (今日).
+    // A label that says only "消耗" would leave the reader asking "since when?".
+    expect(USAGE_BADGE_LABEL).toContain('Token')
+    expect(USAGE_BADGE_LABEL).toContain('今日')
+  })
+
+  it('the stale-tolerance implied by the cadence is stated, not implicit', () => {
+    // A user looking at this badge is looking at a figure that may be up to one full interval old.
+    // Asserting the relationship (rather than the number alone) documents WHY five minutes means
+    // "value may be 5 minutes stale" — so raising the interval later forces a conscious re-think of
+    // what the on-screen number now claims.
+    expect(USAGE_BADGE_REFRESH_MS).toBe(5 * 60 * 1000)
+  })
+})
+
+describe('localDayKey — the offset rule', () => {  it('🔴 uses the LOCAL date, not the UTC date', () => {
     // The trap: `toISOString().slice(0,10)` is UTC. For a user at UTC+8, 07:00 local on 11-01 is
     // 23:00 UTC on 10-31, so the UTC form would name the previous day and today's spend would be
     // attributed to yesterday for the first eight hours of every single day.
