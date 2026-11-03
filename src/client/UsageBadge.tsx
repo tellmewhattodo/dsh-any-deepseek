@@ -44,8 +44,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { StatsResponse } from './panel-api.js'
-import { formatTokens } from './panel-api.js'
+import type { ChannelsResponse, StatsResponse } from './panel-api.js'
+import { currentProviderLabel, formatTokens } from './panel-api.js'
 import './UsageBadge.css'
 
 /**
@@ -81,6 +81,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export interface UsageBadgeInjected {
   /** Today's usage, in the counting convention described above. */
   loadToday: () => Promise<StatsResponse>
+  /** The channel list, which carries the id currently serving requests (owner 2026-11-03). */
+  loadChannels: () => Promise<ChannelsResponse>
 }
 
 /**
@@ -187,15 +189,24 @@ export type UsageBadgeProps = PropsRuntime<'sidebar.footer.action'> & UsageBadge
  * @param props - slot runtime share and the injected loader.
  * @returns the badge, or null while there is nothing honest to show.
  */
-export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement | null {
+export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.ReactElement | null {
   const [value, setValue] = useState<number | null>(null)
   const [failed, setFailed] = useState(false)
   const [day, setDay] = useState<string>(() => localDayKey())
+  const [channels, setChannels] = useState<ChannelsResponse | undefined>(undefined)
   const alive = useRef(true)
 
-  /** One read. Failures land in `failed`, never in `value`. */
+  /** One read of BOTH facts the seat shows. Failures land in `failed`, never in `value`. */
   const read = useCallback(async (): Promise<void> => {
     const today = localDayKey()
+    // 🔴 The provider is read on the SAME tick as the figure, deliberately. Two independent timers
+    // would let the sidebar show today's usage from one moment beside a provider from another,
+    // which is how a row ends up describing two different configurations. One tick, one snapshot.
+    // Its failure is swallowed on purpose: a missing channel list must not blank the usage figure
+    // that did arrive (opposite failure directions are handled separately below).
+    void loadChannels()
+      .then((response) => { if (alive.current) setChannels(response) })
+      .catch(() => undefined)
     try {
       const stats = await loadToday()
       if (!alive.current) return
@@ -215,7 +226,7 @@ export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement |
       if (!alive.current) return
       setFailed(true)
     }
-  }, [loadToday])
+  }, [loadToday, loadChannels])
 
   useEffect(() => {
     alive.current = true
@@ -233,26 +244,51 @@ export function UsageBadge({ loadToday }: UsageBadgeProps): React.ReactElement |
   // One place decides the state; the markup only renders it. Splitting the judgement across the
   // JSX is how the "unknown renders as 0" defect would sneak back in untested.
   const state = badgeState(value, failed)
-  if (state.kind === 'hidden') return null
-  if (state.kind === 'unknown') {
-    return (
-      <span className="ad-usageBadge" title="今天还没有读到用量（或用量接口暂时不可用）">
-        <span className="ad-usageDot" aria-hidden="true" />
-        <span className="ad-usageLabel">{USAGE_BADGE_LABEL}</span>
-        <span className="ad-usageNum">—</span>
-      </span>
-    )
-  }
+
+  /**
+   * The provider line, or nothing.
+   *
+   * 🔴 Owner request 2026-11-03 (with the screenshot): show the current provider here so switching
+   * relays does not require opening Settings. Owner constraint the same day: 「左下角空间小，字少点，
+   * 表意明确即可」 — so this renders the channel's OWN LABEL and nothing else. No 「当前供应商：」
+   * prefix: that phrase would eat 6 of the row's ~20 characters to say what the position already
+   * says, and the row would then truncate the part the reader actually needs.
+   *
+   * Silence when nothing is selected — the model picker above already shows an unset state, and a
+   * second red line about it would be noise. It is NOT silence for a dangling id: that one is a
+   * selection pointing at a channel that no longer exists (see `currentProviderLabel`).
+   */
+  const provider = currentProviderLabel(channels)
+
+  if (state.kind === 'hidden' && provider === undefined) return null
   return (
-    <span
-      className="ad-usageBadge"
-      title={`${day} 计费输入 ${state.tokens.toLocaleString()} tokens（未命中 + 缓存读 + 缓存写）`}
-    >
-      <span className="ad-usageDot" aria-hidden="true" />
-      {/* Label BEFORE the figure: the owner reads "今日 Token 消耗 1465.2M" left to right, and a
-          label after the number would read as a unit suffix (as in "1465.2M tokens consumed"). */}
-      <span className="ad-usageLabel">{USAGE_BADGE_LABEL}</span>
-      <span className="ad-usageNum">{formatTokens(state.tokens)}</span>
+    <span className="ad-usageBadge">
+      {state.kind === 'hidden'
+        ? null
+        : (
+          <span
+            className="ad-usageRow"
+            title={state.kind === 'unknown'
+              ? '今天还没有读到用量（或用量接口暂时不可用）'
+              : `${day} 计费输入 ${state.tokens.toLocaleString()} tokens（未命中 + 缓存读 + 缓存写）`}
+          >
+            <span className="ad-usageDot" aria-hidden="true" />
+            {/* Label BEFORE the figure: the owner reads "今日 Token 消耗 1465.2M" left to right,
+                and a label after the number would read as a unit suffix. */}
+            <span className="ad-usageLabel">{USAGE_BADGE_LABEL}</span>
+            <span className="ad-usageNum">
+              {state.kind === 'unknown' ? '—' : formatTokens(state.tokens)}
+            </span>
+          </span>
+        )}
+      {provider === undefined
+        ? null
+        : (
+          <span className="ad-usageRow ad-providerRow" title="当前供应商（请求正在走的那个渠道）">
+            <span className="ad-usageDot ad-providerDot" aria-hidden="true" />
+            <span className="ad-providerName">{provider}</span>
+          </span>
+        )}
     </span>
   )
 }

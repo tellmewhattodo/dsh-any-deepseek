@@ -21,9 +21,13 @@
  */
 
 .ad-usageBadge {
+  /* 🔴 Two rows since 2026-11-03 (usage + current provider). This is the COLUMN; each line is a
+     `.ad-usageRow`. Owner constraint the same day: 「左下角空间小」 — so it stacks vertically
+     instead of growing sideways into the 256px footer row. */
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   /* No padding/background: this is an ornament, not a button. Giving it a hit area would invite
      clicks that the owner explicitly did not ask for. */
   padding: 0;
@@ -31,18 +35,40 @@
   border: none;
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
-  line-height: 20px;
+  line-height: 16px;
   /* Tabular figures stop the number's width from jittering as it grows during a session, which
      would drag everything to its right back and forth. */
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  /* 🔴 `min-width:0` is what actually lets `.ad-usageLabel` ellipsis. Without it a flex item
-     refuses to shrink below its content, so the label's `text-overflow` rule never fires and the
-     badge instead overflows the 256px footer row. */
+  /* 🔴 `min-width:0` is what actually lets the label ellipsis. Without it a flex item refuses to
+     shrink below its content, so the label's `text-overflow` rule never fires and the badge
+     instead overflows the 256px footer row. */
   min-width: 0;
   max-width: 100%;
   /* This is a display ornament; text selection would fight the surrounding row. */
   user-select: none;
+}
+
+/* One line of the badge. Both rows share this shape so their dots line up in a column. */
+.ad-usageRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The provider name is the only thing on its line that may be clipped — see `.ad-usageNum`. */
+.ad-providerName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The provider dot is dimmer than the usage dot: a static fact, not a live reading. */
+.ad-providerDot {
+  opacity: 0.3;
 }
 
 /* The dot is the "this is a live reading" cue. It is `aria-hidden` in the markup because the

@@ -16,7 +16,12 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { formatBalance, type BalanceRow } from '../src/client/panel-api.js'
+import {
+  describeNote,
+  formatBalance,
+  formatTimeUntil,
+  type BalanceRow,
+} from '../src/client/panel-api.js'
 
 describe('formatBalance — alive is a liveness verdict, never a number', () => {
   const alive: BalanceRow = {
@@ -94,7 +99,7 @@ describe('formatBalance — the other statuses stay distinct', () => {
     expect(formatBalance(row)).toBe('642.44 CNY')
   })
 
-  it('windows render as percentages, which is what OpenCode actually provides', () => {
+  it('windows render as percentages when the provider reports no reset instant', () => {
     const row: BalanceRow = {
       id: 'opencode-go',
       label: 'OpenCode Go-1',
@@ -108,6 +113,8 @@ describe('formatBalance — the other statuses stay distinct', () => {
         ],
       },
     }
+    // No `resetsAt` on any window ⇒ no time text, and crucially no 「还有 0 分钟」 invented from
+    // an absent instant (see the formatTimeUntil suite for that distinction in isolation).
     expect(formatBalance(row)).toBe('rolling 100% · weekly 81% · monthly 75%')
   })
 
@@ -119,5 +126,142 @@ describe('formatBalance — the other statuses stay distinct', () => {
       reading: { amounts: [{ currency: 'CNY', remaining: 0 }], windows: [], available: false },
     }
     expect(formatBalance(row)).toContain('余额不足')
+  })
+})
+
+/**
+ * Owner request 2026-11-03: 「对于有时间限的渠道，opencode go 和 ollama 显示 还有多久」.
+ *
+ * 🔴 Why these cases are unit-tested rather than eyeballed in the panel: the whole feature is a
+ * COUNTDOWN, and a countdown's failure mode is silence, not an exception. An absent `resetsAt`,
+ * an already-passed instant, and a malformed one all produce *some* string; only explicit cases
+ * can tell the three apart from a correct reading.
+ */
+describe('formatTimeUntil — how long until the allowance returns', () => {
+  /** Fixed clock so every case is arithmetically checkable by hand. */
+  const NOW = new Date('2026-11-03T20:00:00Z')
+
+  it('hours, when the horizon is under a day', () => {
+    expect(formatTimeUntil('2026-11-03T23:00:00Z', NOW)).toBe('还有 3 小时')
+  })
+
+  it('minutes, when the horizon is under an hour', () => {
+    expect(formatTimeUntil('2026-11-03T20:12:00Z', NOW)).toBe('还有 12 分钟')
+  })
+
+  it('days, when the horizon is beyond a day — not "57 小时"', () => {
+    // Granularity follows what the reader does with the answer. 57 hours is arithmetic homework;
+    // "2 天" is a decision input. This is exactly the OpenCode weekly/monthly window case.
+    expect(formatTimeUntil('2026-11-05T21:00:00Z', NOW)).toBe('还有 2 天')
+  })
+
+  it('🔴 an already-passed instant says 已重置, never 「还有 0 分钟」', () => {
+    // A past `resetsAt` means the window rolled AFTER this reading was taken — the percentage on
+    // screen describes a cycle that has ended. "0 minutes left" would be permanently, silently
+    // wrong; 「已重置」 tells the reader to re-query instead.
+    expect(formatTimeUntil('2026-11-03T19:00:00Z', NOW)).toBe('已重置')
+  })
+
+  it('🔴 an absent instant yields undefined, NOT 已重置 and NOT a zero countdown', () => {
+    // The load-bearing distinction: "the provider did not tell us" must not render as either
+    // "it already reset" or "it resets in 0 minutes". Both are claims nobody measured.
+    expect(formatTimeUntil(undefined, NOW)).toBeUndefined()
+  })
+
+  it('🔴 a malformed instant is unknown, not "now"', () => {
+    // `Date.parse` returns NaN on garbage. Coercing that to the current time would make every
+    // unreadable timestamp look like "just reset".
+    expect(formatTimeUntil('not-a-date', NOW)).toBeUndefined()
+    expect(formatTimeUntil('', NOW)).toBeUndefined()
+  })
+
+  it('sub-minute remaining gets its own words rather than rounding to zero', () => {
+    expect(formatTimeUntil('2026-11-03T20:00:30Z', NOW)).toBe('不到 1 分钟')
+  })
+})
+
+describe('formatBalance — time-limited channels show how long is left', () => {
+  const NOW = new Date('2026-11-03T20:00:00Z')
+
+  it('🔴 OpenCode Go windows carry their reset countdown beside the percentage', () => {
+    // Real shape as returned by `/any-deepseek/balance` on 2026-11-03: three windows, each with a
+    // `resetsAt`. Before this change the panel printed `rolling 95%` and dropped the instant —
+    // the half of the answer that says whether you can wait it out.
+    const row: BalanceRow = {
+      id: 'opencode-go',
+      label: 'OpenCode Go-1',
+      status: 'ok',
+      reading: {
+        amounts: [],
+        windows: [
+          { name: 'rolling', remainingPercent: 95, resetsAt: '2026-11-03T20:12:00Z' },
+          { name: 'weekly', remainingPercent: 51, resetsAt: '2026-11-09T00:00:00Z' },
+        ],
+      },
+    }
+    const text = formatBalance(row, NOW)
+    expect(text).toContain('rolling 95%（还有 12 分钟）')
+    expect(text).toContain('weekly 51%（还有 5 天）')
+  })
+
+  it('🔴 Ollama period is shown even though it also reports an amount', () => {
+    // The measured Ollama reading (2026-11-03) carries BOTH an amount and a period note. The old
+    // renderer returned early on the amount list and dropped the note entirely ⇒ its renewal date
+    // was invisible. That is the second half of the owner's request.
+    const row: BalanceRow = {
+      id: 'ollama',
+      label: 'Ollama Cloud-1',
+      status: 'ok',
+      reading: {
+        amounts: [{ currency: 'USD', remaining: 46.75642, allowance: 60, toppedUp: 0 }],
+        windows: [],
+        note: 'period 2026-10-19T13:07:35Z → 2026-11-19T13:07:35Z',
+      },
+    }
+    const text = formatBalance(row, NOW)
+    expect(text).toContain('46.76 USD')
+    // Fixed clock 11-03T20:00Z → 11-19T13:07Z is 15 days 17 hours ⇒ floor is 15, and flooring is
+    // the RIGHT choice: rounding up to 16 would claim a renewal that has not happened yet.
+    expect(text).toContain('还有 15 天')
+    // The absolute date stays: a horizon with no anchor cannot be checked against a calendar.
+    expect(text).toContain('2026-11-19')
+  })
+
+  it('prose notes pass through untouched', () => {
+    // Only `period … → …` is rewritten. The "unlimited" note is already written for a human and
+    // must not be mangled into a date template.
+    const row: BalanceRow = {
+      id: 'relay',
+      label: 'Relay',
+      status: 'ok',
+      reading: {
+        amounts: [],
+        windows: [],
+        note: 'used $3.20; this relay reports no cap (unlimited)',
+      },
+    }
+    expect(formatBalance(row, NOW)).toBe('used $3.20; this relay reports no cap (unlimited)')
+  })
+})
+
+describe('describeNote — only period statements are rewritten', () => {
+  const NOW = new Date('2026-11-03T20:00:00Z')
+
+  it('turns a raw ISO span into an anchored horizon', () => {
+    // 15 days 17 hours, floored — see the note in the formatBalance case above.
+    expect(describeNote('period 2026-10-19T13:07:35Z → 2026-11-19T13:07:35Z', NOW))
+      .toBe('周期至 2026-11-19（还有 15 天）')
+  })
+
+  it('🔴 keeps the raw span when the end is unreadable', () => {
+    // Dropping the dates here would leave the reader with neither a horizon NOR the provider's
+    // own words — strictly less information than before the change.
+    expect(describeNote('period 2026-10-19T13:07:35Z → garbage', NOW))
+      .toBe('周期 2026-10-19T13:07:35Z → garbage')
+  })
+
+  it('passes non-period notes through verbatim', () => {
+    const note = 'subscription usage windows; the credit balance is not readable with an API key'
+    expect(describeNote(note, NOW)).toBe(note)
   })
 })

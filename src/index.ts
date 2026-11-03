@@ -259,6 +259,8 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
       // The advertises model NAME, not the provider name: the panel prints this inside
       // "一个模型（…）", so a provider name there reads as a copy-paste slip to the user.
       advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
+      // The live selection, so the sidebar can name the active provider (owner 2026-11-03).
+      current,
       describeKey: async (ref: string) => {
         const seam = credentials()
         if (seam?.describe === undefined) return { configured: process.env[ref] !== undefined, source: 'env' }

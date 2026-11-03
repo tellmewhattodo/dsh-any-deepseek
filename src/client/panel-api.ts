@@ -36,6 +36,42 @@ export interface ChannelsResponse {
   channels: ChannelRow[]
   presets: Array<{ id: string; displayName: string }>
   model: { id: string; name: string }
+  /**
+   * The channel id currently serving requests (owner request 2026-11-03).
+   *
+   * Absent — not empty — when nothing is selected. The sidebar distinguishes "no provider chosen"
+   * from "a provider named ''", because the first is a setup state the reader can fix and the
+   * second is a malformed config.
+   */
+  current?: string
+}
+
+/**
+ * The label to show for the channel that is serving requests right now.
+ *
+ * 🔴 Owner request 2026-11-03: the sidebar should name the live provider so it does not require
+ * opening Settings. Owner constraint the same day: 「左下角空间小，字少点，表意明确即可」 — the seat is
+ * 256px wide and already carries a usage figure, so this returns the SHORTEST true sentence:
+ * just the channel's own label, with no 「当前供应商：」 prefix on every line.
+ *
+ * Three states, kept distinct for the same reason the balance row does it:
+ *  · a label when a channel is selected and found;
+ *  · `undefined` when nothing is selected — the caller renders nothing, because "no provider" is
+ *    already visible as the model picker being unset and a red line here would be noise;
+ *  · `未找到` when `current` names a channel that no longer exists. That one IS worth a word: the
+ *    router will fall back, so requests still work, but the user's selection is pointing at
+ *    something gone and only they can fix it.
+ * @param response - the `/channels` body, or undefined before it loads.
+ * @returns the short label, or undefined when there is nothing to say.
+ */
+export function currentProviderLabel(response: ChannelsResponse | undefined): string | undefined {
+  if (response === undefined) return undefined
+  const id = response.current
+  if (id === undefined || id === '') return undefined
+  const channel = response.channels.find((candidate) => candidate.id === id)
+  // A dangling selection is a real, fixable problem, so it gets one short word rather than
+  // silence — silence would look identical to "nothing configured".
+  return channel === undefined ? '未找到' : channel.label
 }
 
 /** One aggregate row. Mirrors the ledger's disjoint counting convention. */
@@ -183,6 +219,54 @@ export async function fetchBalances(): Promise<BalanceResponse> {
 }
 
 /**
+ * How long until an instant, in words a person reads at a glance.
+ *
+ * 🔴 **Owner request 2026-11-03**: 「对于有时间限的渠道，opencode go 和 ollama 显示 还有多久」.
+ * Both channels meter against a clock, but they expose it differently: OpenCode Go attaches
+ * `resetsAt` to each of its three windows, Ollama puts the cycle end inside `period.until`. Until
+ * now the panel showed `rolling 95%` and `46.76 USD` — a percentage and a dollar figure that say
+ * nothing about WHEN the allowance comes back. The reset instant was already in the payload and
+ * already parsed into `resetsAt`; it was simply never rendered.
+ *
+ * ## The three distinctions this function refuses to collapse
+ *
+ *  1. **Past vs future.** A `resetsAt` in the past means the window has already rolled over and
+ *     this reading is a snapshot from before the roll — the number on screen is stale, not zero.
+ *     Saying 「已重置」 is honest; saying 「还有 0 分钟」 would claim a reset is imminent forever.
+ *  2. **Unknown vs absent.** An unparseable or missing instant is `undefined`, which the caller
+ *     renders as nothing. It must not become 「还有 0 分钟」 — that is a reading nobody took.
+ *  3. **Granularity by magnitude.** `还有 3 天` is useful; `还有 2,847 分钟` is arithmetic homework.
+ *     Days for long horizons, hours for a day, minutes under an hour — the unit follows what the
+ *     reader would actually do with the answer.
+ *
+ * @param resetsAt - the instant the allowance returns, as the provider spelled it.
+ * @param now - clock, injectable for tests.
+ * @returns e.g. `还有 3 天`, `还有 4 小时`, `还有 12 分钟`, `已重置`; or `undefined` when the
+ *          instant is absent or unparseable.
+ */
+export function formatTimeUntil(resetsAt: string | undefined, now: Date = new Date()): string | undefined {
+  if (resetsAt === undefined) return undefined
+  const target = Date.parse(resetsAt)
+  // A provider that ships a malformed instant is a fact to report as *unknown*, never as *now*.
+  if (!Number.isFinite(target)) return undefined
+  const deltaMs = target - now.getTime()
+  // Already elapsed ⇒ the window rolled. Reporting "0 minutes left" would be permanently wrong;
+  // the reading on screen belongs to a cycle that has ended.
+  if (deltaMs <= 0) return '已重置'
+  const minutes = Math.floor(deltaMs / 60_000)
+  if (minutes < 1) return '不到 1 分钟'
+  if (minutes < 60) return `还有 ${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) {
+    // Hours alone under 2 days: "还有 1 天 23 小时" invites the reader to do subtraction to find
+    // out that it is basically tomorrow.
+    return `还有 ${hours} 小时`
+  }
+  const days = Math.floor(hours / 24)
+  return `还有 ${days} 天`
+}
+
+/**
  * Render one balance row as the text a person reads.
  *
  * Deliberately total: every status produces words, never an empty string. A blank cell beside a
@@ -194,9 +278,10 @@ export async function fetchBalances(): Promise<BalanceResponse> {
  * very figure this status exists to avoid inventing (owner directive 2026-10-23: 「不支持查余额的，
  * 改成直接测通，通则说明余额还是有的，没用完」).
  * @param row - one row from `/balance`.
+ * @param now - clock, injectable so the time-remaining text can be pinned in tests.
  * @returns a short human label.
  */
-export function formatBalance(row: BalanceRow): string {
+export function formatBalance(row: BalanceRow, now: Date = new Date()): string {
   // Narrow on the discriminant FIRST. The non-`ok` arms carry no `reading`, and separate early
   // returns for them do not narrow the union for TypeScript — it still sees `reading` as
   // possibly-absent further down.
@@ -225,12 +310,53 @@ export function formatBalance(row: BalanceRow): string {
     parts.push(`${amount.remaining.toFixed(2)} ${amount.currency}`)
   }
   for (const window of windows) {
-    parts.push(`${window.name} ${Math.round(window.remainingPercent)}%`)
+    // 🔴 Owner request 2026-11-03: the reset instant travels WITH the percentage. A bare
+    // `rolling 95%` answers "how much" and silently drops "until when", which is the half that
+    // decides whether the reader can wait it out or must top up now.
+    const until = formatTimeUntil(window.resetsAt, now)
+    const suffix = until === undefined ? '' : `（${until}）`
+    parts.push(`${window.name} ${Math.round(window.remainingPercent)}%${suffix}`)
   }
   // `is_available:false` is the provider saying calls will begin failing — worth one word.
   if (available === false) parts.push('（余额不足）')
-  if (parts.length === 0) return row.reading.note ?? '无可读数值'
+  // 🔴 The note is the ONLY place Ollama's cycle end appears (`period X → Y`), and until
+  // 2026-11-03 it was dropped whenever an amount existed — which is exactly the Ollama case
+  // (it reports both an amount and a period). The owner asked that time-limited channels show
+  // how long is left, so a channel whose money line renders but whose cycle end does not is the
+  // precise failure this branch removes.
+  if (row.reading.note !== undefined && row.reading.note !== '') {
+    parts.push(describeNote(row.reading.note, now))
+  }
+  if (parts.length === 0) return '无可读数值'
   return parts.join(' · ')
+}
+
+/**
+ * Turn a provider note into something with a readable time horizon.
+ *
+ * The only note this rewrites is Ollama's `period <from> → <until>` — the rest are already prose
+ * written for a human (「unlimited」 and friends) and pass through untouched.
+ *
+ * 🔴 Why rewrite rather than append: 「period 2026-10-19T13:07:35Z → 2026-11-19T13:07:35Z」 is two
+ * ISO timestamps. The reader wants "how long until it renews", not a diff to do in their head.
+ * The absolute dates stay, because a horizon without an anchor cannot be checked against a
+ * calendar.
+ * @param note - the reading's note, verbatim from the parser.
+ * @param now - clock, injectable for tests.
+ * @returns the note, with an added 「还有 N 天」 when it is a period statement.
+ */
+export function describeNote(note: string, now: Date = new Date()): string {
+  const period = /^period\s+(\S+)\s+→\s+(\S+)$/.exec(note)
+  if (period === null) return note
+  // Indexed rather than destructured: `noUncheckedIndexedAccess` types every group as possibly
+  // absent, and an assertion here would be hiding the very case the regex already guarantees.
+  const from = period[1] ?? ''
+  const until = period[2] ?? ''
+  const untilText = formatTimeUntil(until, now)
+  // When the end is unreadable the dates are still worth showing — they are the provider's own
+  // words — so the raw span is kept rather than replaced by 「周期 …」 alone.
+  if (untilText === undefined) return `周期 ${from} → ${until}`
+  return `周期至 ${until.slice(0, 10)}（${untilText}）`
 }
 
 const BASE = '/any-deepseek'

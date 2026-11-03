@@ -49,6 +49,22 @@ export interface RouteDeps {
   listPresets: () => Array<{ id: string; displayName: string }>
   /** The single advertised model. */
   advertised: () => { id: string; name: string }
+  /**
+   * The channel id that currently serves requests.
+   *
+   * 🔴 Owner request 2026-11-03: the sidebar should show which provider is live, so the reader
+   * does not have to open Settings to find out. This is the ONE axis that answers it (`enabled`
+   * was removed on 2026-10-21 precisely because two axes could disagree), so it is passed here
+   * rather than reconstructed on the client from the settings document — the settings document is
+   * what was WRITTEN, this is what the router actually reads.
+   * @returns the configured id, or undefined when nothing is selected.
+   *
+   * ⚠️ Optional, and its absence is treated as "nothing selected" rather than as an error: the
+   * route must keep working for any caller that predates this field (including the existing test
+   * fixtures). A hard requirement here would turn a decorative addition into a way to break the
+   * whole channel list.
+   */
+  current?: () => string | undefined
   /** Describe a credential reference (never its value). */
   describeKey: (ref: string) => Promise<{ configured: boolean; source?: string }>
   /**
@@ -533,7 +549,16 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
             ...channel.credential.kind === 'reference' ? { keyRef: channel.credential.ref } : {},
           }
         }))
-        json(res, 200, { channels: rows, presets: deps.listPresets(), model: deps.advertised() })
+        const active = deps.current?.()
+        json(res, 200, {
+          channels: rows,
+          presets: deps.listPresets(),
+          model: deps.advertised(),
+          // 🔴 The live selection travels with the list so the sidebar can name the active
+          // provider without a second request. Absent (not empty-string) when nothing is selected:
+          // "no channel chosen" and "a channel whose id is empty" must not look the same.
+          ...active === undefined ? {} : { current: active },
+        })
       },
     },
     {

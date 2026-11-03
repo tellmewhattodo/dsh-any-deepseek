@@ -41,6 +41,7 @@ import {
   fetchStats,
   probeChannel,
   type BalanceResponse,
+  type ChannelsResponse,
   type ChannelRow,
   type StatsResponse,
 } from './panel-api.js'
@@ -161,6 +162,10 @@ export function apply(ctx: ClientContext): void {
                     start.setHours(0, 0, 0, 0)
                     return fetchStats('day', start.toISOString())
                   },
+                  // Same-origin, same route the panel already calls. The provider line needs the
+                  // live `current`, which the server reads from the settings document it actually
+                  // routes with (owner request 2026-11-03).
+                  loadChannels: (): Promise<ChannelsResponse> => fetchChannels(),
                 }),
               },
               UsageBadge,

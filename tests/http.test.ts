@@ -170,6 +170,32 @@ describe('GET /channels', () => {
     expect(model.name).toBe(ADVERTISED_MODEL_NAME)
   })
 
+  it('🔴 carries the live `current` so the sidebar can name the active provider', async () => {
+    // Owner request 2026-11-03. The sidebar badge reads this field to show which provider is
+    // serving. Before it existed, the only way to learn the active provider was to open Settings.
+    const { call } = mount({ current: () => 'go' })
+    const response = await call(`${ROUTE_PREFIX}/channels`)
+    expect((response.body as { current?: string }).current).toBe('go')
+  })
+
+  it('🔴 omits `current` entirely when nothing is selected — absent, not empty', async () => {
+    // "No channel chosen" and "a channel whose id is the empty string" are different states.
+    // Serialising `current: ''` would make the sidebar's `undefined` branch unreachable on the
+    // wire, so the badge could not tell them apart either.
+    const { call } = mount({ current: () => undefined })
+    const response = await call(`${ROUTE_PREFIX}/channels`)
+    expect('current' in (response.body as Record<string, unknown>)).toBe(false)
+  })
+
+  it('still answers when `current` is not wired at all', async () => {
+    // The dependency is optional so an older composition (or a fixture) cannot break the whole
+    // channel list. A decorative field must never be able to take down the table.
+    const { call } = mount()
+    const response = await call(`${ROUTE_PREFIX}/channels`)
+    expect(response.status).toBe(200)
+    expect('current' in (response.body as Record<string, unknown>)).toBe(false)
+  })
+
   it('marks an unconfigured key as absent rather than failing the route', async () => {
     const { call } = mount({ channels: () => [channel({ credential: { kind: 'none' } })] })
     const response = await call(`${ROUTE_PREFIX}/channels`)
