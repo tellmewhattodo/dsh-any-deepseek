@@ -227,24 +227,30 @@ describe('formatBalance — time-limited channels show how long is left', () => 
     expect(text).toContain('2026-11-19')
   })
 
-  it('prose notes pass through untouched', () => {
-    // Only `period … → …` is rewritten. The "unlimited" note is already written for a human and
-    // must not be mangled into a date template.
+  it('🔴 a prose note is DROPPED, not appended — it would double the line length', () => {
+    // Measured regression from the first cut of 0.0.29: rendering the note unconditionally made
+    // OpenCode Go's live line
+    //   `rolling 93%（还有 2 小时） · weekly 50%（还有 5 天） · monthly 23%（还有 2 天） ·`
+    //   ` subscription usage windows; the credit balance is not readable with an API key`
+    // That trailing sentence explains why no amount appears — which the reader can already see.
+    // The panel has ONE line per channel, in a 256px panel.
     const row: BalanceRow = {
-      id: 'relay',
-      label: 'Relay',
+      id: 'opencode-go',
+      label: 'OpenCode Go-1',
       status: 'ok',
       reading: {
         amounts: [],
-        windows: [],
-        note: 'used $3.20; this relay reports no cap (unlimited)',
+        windows: [{ name: 'rolling', remainingPercent: 93, resetsAt: '2026-11-03T22:00:00Z' }],
+        note: 'subscription usage windows; the credit balance is not readable with an API key',
       },
     }
-    expect(formatBalance(row, NOW)).toBe('used $3.20; this relay reports no cap (unlimited)')
+    const text = formatBalance(row, NOW)
+    expect(text).toBe('rolling 93%（还有 2 小时）')
+    expect(text).not.toContain('not readable with an API key')
   })
 })
 
-describe('describeNote — only period statements are rewritten', () => {
+describe('describeNote — only period statements earn a place on the line', () => {
   const NOW = new Date('2026-11-03T20:00:00Z')
 
   it('turns a raw ISO span into an anchored horizon', () => {
@@ -260,8 +266,45 @@ describe('describeNote — only period statements are rewritten', () => {
       .toBe('周期 2026-10-19T13:07:35Z → garbage')
   })
 
-  it('passes non-period notes through verbatim', () => {
+  it('🔴 a non-period note yields undefined — dropped, not passed through', () => {
+    // The first cut returned the note verbatim, which is what put an English paragraph after
+    // OpenCode Go's three windows. Returning `undefined` makes "this note earns no space" a
+    // decision the renderer can act on, instead of a string it cannot tell from a useful one.
     const note = 'subscription usage windows; the credit balance is not readable with an API key'
-    expect(describeNote(note, NOW)).toBe(note)
+    expect(describeNote(note, NOW)).toBeUndefined()
+  })
+
+  it('🔴 an "unlimited" note is dropped from a populated line, but KEPT when it is all there is', () => {
+    // Two different rows, two different answers — this is the boundary the fallback exists for.
+    // `parseOpenAIBilling` returns this note with NO amounts, so dropping it unconditionally would
+    // render 「无可读数值」 for a channel that did report something. A long line is a worse-looking
+    // truth; an empty cell is a better-looking lie.
+    expect(describeNote('used $3.20; this relay reports no cap (unlimited)', NOW)).toBeUndefined()
+
+    const emptyButExplained: BalanceRow = {
+      id: 'relay',
+      label: 'Relay',
+      status: 'ok',
+      reading: {
+        amounts: [],
+        windows: [],
+        note: 'used $3.20; this relay reports no cap (unlimited)',
+      },
+    }
+    expect(formatBalance(emptyButExplained, NOW))
+      .toBe('used $3.20; this relay reports no cap (unlimited)')
+
+    // And it does NOT come back when there IS something else to show: the drop is contextual.
+    const populated: BalanceRow = {
+      id: 'opencode-go',
+      label: 'OpenCode Go-1',
+      status: 'ok',
+      reading: {
+        amounts: [],
+        windows: [{ name: 'rolling', remainingPercent: 93 }],
+        note: 'subscription usage windows; the credit balance is not readable with an API key',
+      },
+    }
+    expect(formatBalance(populated, NOW)).toBe('rolling 93%')
   })
 })

@@ -8,6 +8,41 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.30
+
+### 修 `0.0.29` 自己引入的一处缺陷：note 被无条件追加，把余额那一行撑爆
+
+🔴 **这是真机载荷抓出来的，不是单元测试抓出来的** —— 值得单独记一次。
+
+`0.0.29` 为了让 Ollama 的周期显示出来，把 `formatBalance` 改成**无条件追加 `note`**。而 OpenCode Go
+的 `note` 是 `subscription usage windows; the credit balance is not readable with an API key`。
+于是它那一行真实变成了：
+
+```
+rolling 93%（还有 2 小时） · weekly 50%（还有 5 天） · monthly 23%（还有 2 天） · subscription usage windows; the credit balance is not readable with an API key
+```
+
+三个窗口已经把问题答完了，后面还拖一句"为什么没有金额"的英文说明 —— 而**"没有金额"读者已经看得见**。
+
+**修法（判据化，不是删一个字符串）**：`describeNote` 改成**只认 `period A → B`（Ollama 唯一携带
+事实的形状），其余一律返回 `undefined`** ⇒ "这条 note 值不值得占一个位置"变成渲染层**能据此行动的决定**，
+而不是一个它无从分辨的字符串。
+
+### 同时补一条兜底：全空时才把 note 请回来
+
+⚠️ 无条件丢弃也有反例：`parseOpenAIBilling` 对 new-api 的「无限额度」哨兵**返回 note 但没有任何金额**。
+丢弃它会让那一格变成 `无可读数值` —— **一个更好看的谎**。
+
+⇒ 规则：**note 被丢弃 ∧ 其它内容为空** ⇒ 仍显示 note 原文。
+判据写成三行并存：`describeNote` 返回 undefined／空行时显示原文／有内容时不回来。
+
+### 负控制
+把 `describeNote` 的 `return undefined` 改回 `return note` ⇒ **精确红 3 条**，第一条的失败信息
+直接把那串英文打印出来。
+
+### 测试
+全套 **323 例**绿。typecheck 双半 ✓ / build ✓。
+
 ## v0.0.29
 
 ### ① 有时限的渠道显示「还有多久」（owner 2026-11-03）

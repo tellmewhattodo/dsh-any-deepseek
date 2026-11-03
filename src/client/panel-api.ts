@@ -319,42 +319,65 @@ export function formatBalance(row: BalanceRow, now: Date = new Date()): string {
   }
   // `is_available:false` is the provider saying calls will begin failing — worth one word.
   if (available === false) parts.push('（余额不足）')
-  // 🔴 The note is the ONLY place Ollama's cycle end appears (`period X → Y`), and until
-  // 2026-11-03 it was dropped whenever an amount existed — which is exactly the Ollama case
-  // (it reports both an amount and a period). The owner asked that time-limited channels show
-  // how long is left, so a channel whose money line renders but whose cycle end does not is the
-  // precise failure this branch removes.
+  /**
+   * The note — but only when it adds something the line does not already say.
+   *
+   * 🔴 **This guard was missing in the first cut of 0.0.29, and the live payload caught it.**
+   * Rendering the note unconditionally made OpenCode Go's line
+   * `rolling 93%（还有 2 小时） · weekly 50%（还有 5 天） · monthly 23%（还有 2 天） ·
+   *  subscription usage windows; the credit balance is not readable with an API key`
+   * — three windows that already answer the question, followed by a sentence explaining a
+   * limitation the reader did not ask about. The panel has ONE line per channel.
+   *
+   * The rule: a note that only *explains why a field is absent* is redundant once that field's
+   * absence is already visible (no amounts shown ⇒ obviously no amount). A note that carries a
+   * FACT — Ollama's `period … → …` is the only source of its cycle end — must be rendered.
+   * `describeNote` reports which kind it is, so the decision lives in one place rather than as a
+   * string comparison here.
+   */
   if (row.reading.note !== undefined && row.reading.note !== '') {
-    parts.push(describeNote(row.reading.note, now))
+    const described = describeNote(row.reading.note, now)
+    if (described !== undefined) parts.push(described)
+    /**
+     * 🔴 Last-resort fallback: if the note was dropped AND nothing else rendered, show the note
+     * after all. This is the ONE case where a "redundant" note is not redundant — dropping it
+     * would turn a channel that reported something into a cell reading 「无可读数值」, which is a
+     * worse lie than a long line. Measured shape: `parseOpenAIBilling` returns
+     * `used $3.20; this relay reports no cap (unlimited)` with NO amounts, so the unconditional
+     * drop would leave the cell empty.
+     */
+    else if (parts.length === 0) parts.push(row.reading.note)
   }
   if (parts.length === 0) return '无可读数值'
   return parts.join(' · ')
 }
 
 /**
- * Turn a provider note into something with a readable time horizon.
+ * Turn a provider note into something worth a place on the one-line balance cell — or nothing.
  *
- * The only note this rewrites is Ollama's `period <from> → <until>` — the rest are already prose
- * written for a human (「unlimited」 and friends) and pass through untouched.
+ * Only one note shape carries a FACT the line cannot otherwise show: Ollama's
+ * `period <from> → <until>`, which is the sole source of that channel's cycle end. It is rewritten
+ * to 「周期至 <date>（还有 N 天）」.
  *
- * 🔴 Why rewrite rather than append: 「period 2026-10-19T13:07:35Z → 2026-11-19T13:07:35Z」 is two
- * ISO timestamps. The reader wants "how long until it renews", not a diff to do in their head.
- * The absolute dates stay, because a horizon without an anchor cannot be checked against a
- * calendar.
+ * 🔴 Everything else returns `undefined`, i.e. is DROPPED. That is the measured correction from the
+ * first cut of 0.0.29: OpenCode Go's note is `subscription usage windows; the credit balance is not
+ * readable with an API key`, which explains why a field is missing — a fact the reader can already
+ * see (no amount is rendered). Appending it turned a clean three-window line into a wall of text in
+ * a 256px-wide panel.  ⚠️ It is NOT lost: the same string still travels in `/balance`, and the
+ * panel's own documentation covers it, so a reader who wants the explanation can still find it.
+ *
  * @param note - the reading's note, verbatim from the parser.
  * @param now - clock, injectable for tests.
- * @returns the note, with an added 「还有 N 天」 when it is a period statement.
+ * @returns the rewritable sentence, or `undefined` when the note adds nothing to the line.
  */
-export function describeNote(note: string, now: Date = new Date()): string {
+export function describeNote(note: string, now: Date = new Date()): string | undefined {
   const period = /^period\s+(\S+)\s+→\s+(\S+)$/.exec(note)
-  if (period === null) return note
+  if (period === null) return undefined
   // Indexed rather than destructured: `noUncheckedIndexedAccess` types every group as possibly
   // absent, and an assertion here would be hiding the very case the regex already guarantees.
   const from = period[1] ?? ''
   const until = period[2] ?? ''
   const untilText = formatTimeUntil(until, now)
-  // When the end is unreadable the dates are still worth showing — they are the provider's own
-  // words — so the raw span is kept rather than replaced by 「周期 …」 alone.
   if (untilText === undefined) return `周期 ${from} → ${until}`
   return `周期至 ${until.slice(0, 10)}（${untilText}）`
 }
