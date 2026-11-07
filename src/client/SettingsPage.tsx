@@ -196,9 +196,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [keying, setKeying] = useState<string | null>(null)
   const [keyDraft, setKeyDraft] = useState('')
   const [keySaving, setKeySaving] = useState(false)
-  /** Which channel currently has its inline RENAME field open (null = none). */
-  const [renaming, setRenaming] = useState<string | null>(null)
-  const [renameDraft, setRenameDraft] = useState('')
+  /**
+   * 🔴 There is no rename state any more (owner 2026-11-06). The per-row 改名 button was removed
+   * together with its inline field; renaming now happens through the add form's 显示名 field. The
+   * `channels.<id>.label` setting it wrote is unchanged, so bringing the button back needs nothing
+   * from this file beyond the button itself.
+   */
   /** The channel id and the label the form last derived from a preset (see the select). */
   const lastSuggestedId = useRef('')
   const lastSuggestedLabel = useRef('')
@@ -386,25 +389,6 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   }
 
   /**
-   * Rename one channel.
-   *
-   * `label` is the display name and nothing else: the channel's identity is its id (the
-   * configuration key), which renaming must never touch — a renamed key would be a different
-   * channel, with a different key and a different `current` target.
-   *
-   * Clearing the name removes the field, which restores the preset's name rather than leaving an
-   * empty label in the document.
-   * @param row - the channel being renamed.
-   */
-  const renameChannel = (row: ChannelRow): void => {
-    const next = renameDraft.trim()
-    if (next === '') write(() => removeField(['channels', row.id, 'label']), '恢复默认名失败')
-    else write(() => setField(['channels', row.id, 'label'], next), '重命名失败')
-    setRenaming(null)
-    setRenameDraft('')
-  }
-
-  /**
    * The usage rows actually rendered.
    *
    * Truncation happens HERE, in the component, and not in `/stats` — the server keeps returning
@@ -529,47 +513,13 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                         <span className="ad-warn" title={row.warnings.join('\n')}>⚠</span>
                       )}
                       {/*
-                        🔴 改名 MOVED OUT of this line (owner 2026-10-25: 「改名这个按钮实现的
-                        很突兀」).
-
-                        The complaint was about placement, not about the feature. It sat here with
-                        `margin-left: auto`, which pushed it to the far right of the TEXT column —
-                        so it floated in the middle of the row, visually detached from both the name
-                        it edits and the 测试/移除 buttons it is a peer of. A control that acts on
-                        the channel belongs with the other channel actions.
-
-                        It now lives in `.ad-rowActions`, first in the group, so every row reads
-                        right-to-left as: 移除 · 测试 · 更换密钥 · 改名. See that block for the note
-                        on why it is FIRST there (it is the one action a two-account setup uses).
+                        🔴 改名 used to sit here, then moved to `.ad-rowActions`, then was REMOVED
+                        (2026-10-25 placement complaint → 2026-11-06 「删掉改名这个功能吧」).
+                        The title line now carries only what identifies the channel and what is
+                        true about it right now — nothing that acts on it. See the note on
+                        `.ad-rowActions` for why this one went and the other three stayed.
                       */}
                     </span>
-                    {renaming === row.id && (
-                      <span className="ad-keyForm">
-                        <input
-                          className="ad-input"
-                          value={renameDraft}
-                          placeholder="显示名（留空则用预设默认名）"
-                          onClick={(event) => event.preventDefault()}
-                          onChange={(event) => setRenameDraft(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault()
-                              renameChannel(row)
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="ad-btn"
-                          onClick={(event) => {
-                            event.preventDefault()
-                            renameChannel(row)
-                          }}
-                        >
-                          保存名字
-                        </button>
-                      </span>
-                    )}
                     {/*
                       🔴 The detail line is GONE (owner request 2026-10-25: 「这部分不要了」,
                       pointing at the whole 模型·协议·地址 + 密钥态 row).
@@ -651,23 +601,26 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   the row read as "what it is (left) | what you can do to it (right)".
 
                   Order is by how often a real setup reaches for it:
-                    改名    — the reason two accounts on one relay are distinguishable at all
                     更换密钥 — key rotated, or a channel that never had one
                     测试    — costs a real request, so it is not first
                     移除    — destructive, so it is last
+
+                  🔴 改名 is NOT here any more (owner 2026-11-06: 「删掉改名这个功能吧，能让移动端
+                  看起来正常点」). Read the two halves separately:
+
+                  · **Why it went**: on a phone the panel was unusable, and this group was the
+                    cause (see the CSS note). The 改名 button was the one member of this group
+                    whose job was already available elsewhere — the add form's 显示名 field —
+                    so it was the one to give up. 更换密钥 and 移除 have NO other entry point
+                    (removing them would make a key unchangeable and a channel undeletable), and
+                    测试 is the only way to answer "is this relay working".
+                  · **What is lost, said plainly**: discovering that a channel can be renamed now
+                    depends on reading the add form's help text (which says so explicitly), and
+                    renaming means re-submitting an existing channel through that form. Adding
+                    it back is a single `<button>` in this group — the setting it writes
+                    (`channels.<id>.label`) is untouched, and the runtime still reads `label`.
                 */}
                 <div className="ad-rowActions">
-                  <button
-                    type="button"
-                    className="ad-btn ad-btn-quiet"
-                    title="改显示名（渠道 id 不变）"
-                    onClick={() => {
-                      setRenaming(renaming === row.id ? null : row.id)
-                      setRenameDraft(renaming === row.id ? '' : row.label)
-                    }}
-                  >
-                    {renaming === row.id ? '取消' : '改名'}
-                  </button>
                   <button
                     type="button"
                     className="ad-btn ad-btn-quiet"
@@ -764,6 +717,11 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               This is what makes "the same relay, two accounts" readable: the entries differ only
               by which key they carry, so the name is the only thing that can tell them apart. The
               runtime has honoured `label` since the beginning; the panel simply never asked.
+
+              🔴 It is ALSO the only way to rename a channel (2026-11-06). The per-row 改名 button
+              used to be the way, and it was removed at the owner's request — see the note on
+              `.ad-rowActions` — so this field has to say that it can rename, and name the filter
+              by which a preset channel appears in this list.
             */}
             <label className="ad-field">
               <span>显示名<em className="ad-opt">可空</em></span>
@@ -774,8 +732,9 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 onChange={(event) => setNewLabel(event.target.value)}
               />
               <span className="ad-fieldHelp">
-                只影响这里显示的名字。同一家开两个号时，靠它区分；留空就用规格默认名。
-                <strong>改名不动 id</strong>。
+                这一格也是<strong>改名</strong>的唯一入口：选回同一个规格、名字照写、粘上门已有 key
+                的<strong>占位值</strong>（确认那几个字符的点，不会覆盖原有 key），保存即可。
+                留空或原样提交，它就保持现在的名字。
               </span>
             </label>
             {/*

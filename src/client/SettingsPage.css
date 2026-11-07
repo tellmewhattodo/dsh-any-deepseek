@@ -106,6 +106,7 @@
  */
 .ad-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -117,6 +118,28 @@
    * selected — a row that reindents on click makes the list feel like it moved.
    */
   border-left: 3px solid transparent;
+}
+
+/*
+ * 🔴 The narrow-viewport layout: the action buttons get their own line.
+ *
+ * Measured on the owner's phone (2026-11-06 screenshot): 390px viewport, ~340px of content. Four
+ * buttons at min-width 56px + 8px gaps need ~272px; together with a name column that cannot be
+ * narrower than one word, they do not fit side by side. Below ~520px they now wrap below the
+ * name instead of squeezing it into a vertical strip.
+ *
+ * Chosen as a media query rather than left to flex alone: without an explicit basis the group
+ * wraps only when its CONTENT overflows, which leaves the name column at min-content width for a
+ * long stretch before that happens — the exact state the screenshot was taken in.
+ */
+@media (max-width: 520px) {
+  .ad-rowActions {
+    flex-basis: 100%;
+  }
+  .ad-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
 }
 
 /*
@@ -225,11 +248,31 @@
   opacity: 0.5;
 }
 
+/*
+ * 🔴 Every control that acts on a channel lives here — and it MUST be allowed to shrink/wrap.
+ *
+ * This block is what made the panel unusable on a phone (owner 2026-11-06, screenshot from a
+ * 390px-wide viewport). The row itself was already `flex-wrap: wrap`, so the actions SHOULD have
+ * dropped to their own line; `flex-shrink: 0` here kept the group at its full intrinsic width
+ * (~4 buttons ≈ 272px) inside a ~340px content box, and `.ad-rowMain` — which then had only about
+ * 60px left — collapsed to its min-content width, printing `deepseek-v4.1-flash` and the balance
+ * one fragment per line. Every control stayed on screen; none of them was readable.
+ *
+ * Three properties, each doing a different job:
+ *   · flex-basis 100% + the wrap rule below ⇒ the group takes its own line on narrow screens;
+ *   · flex-wrap + no flex-shrink:0 ⇒ it may wrap again rather than overflow if the width shrinks
+ *     further, and on a wide panel it stays on the title line exactly as before;
+ *   · it keeps `margin-left: auto` so that, once wrapped, the buttons stay right-aligned under the
+ *     row instead of drifting back under the name.
+ */
 .ad-rowActions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex-shrink: 0;
+  margin-left: auto;
+  min-width: 0;
 }
 
 /*

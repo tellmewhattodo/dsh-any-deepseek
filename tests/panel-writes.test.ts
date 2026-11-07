@@ -354,57 +354,68 @@ describe('what the owner reported, pinned as assertions', () => {
     // marker matters because leaving it blank is a real choice (the preset's name applies).
     expect(page).toMatch(/<span>显示名<em className="ad-opt">可空<\/em><\/span>/)
     expect(page).toContain('lastSuggestedLabel.current')
-    // Renaming an existing channel writes `label` ONLY. Renaming the id would be a different
-    // channel: a different key, and a different `current` target.
-    const rename = page.slice(page.indexOf('const renameChannel = (row: ChannelRow)'))
-    const body = rename.slice(0, rename.indexOf('\n  }'))
-    expect(body).toContain("setField(['channels', row.id, 'label']")
-    expect(body).not.toContain("'channels', row.id, 'apiKey'")
-    // An emptied name restores the preset's name instead of leaving an empty label behind.
-    expect(body).toContain("removeField(['channels', row.id, 'label'])")
+    /*
+     * 🔴 The per-row 改名 button was REMOVED (owner 2026-11-06), and the assertion had to be
+     * re-anchored rather than deleted — the requirement it protects did not change one bit:
+     * renaming must write `label` and must never touch the channel id (that would be a different
+     * channel, with a different key and a different `current` target).
+     *
+     * It is now the ONLY rename path, so it is the only place the write can happen: the add form
+     * submits `label` as part of a new channel ENTRY, keyed by `channels.<id>`. What must remain
+     * true, and is checked here, is that the entry's key is the channel id and that the name
+     * travels in the `label` member — never as the id.
+     */
+    const add = page.slice(page.indexOf('const addChannel = (): void =>'))
+    const body = add.slice(0, add.indexOf('\n  }'))
+    expect(body).toContain("setField(['channels', id]")
+    expect(body).toContain('entry.label = label')
+    expect(body).not.toContain("setField(['label'")
+    // And the button that used to do it is gone, not merely hidden: no rename handler, no state.
+    expect(page).not.toContain('renameChannel')
+    expect(page).not.toContain('setRenaming')
   })
 
   it('🔴 the rename button cannot also select the channel', () => {
-    // Renaming a channel must never silently make it current — a destructive side effect on an
-    // unrelated action.
-    //
-    // 🔴 The mechanism changed on 2026-10-25, and the ASSERTION had to change with it rather than
-    // being deleted. The button used to live INSIDE the row's `<label>` (which wraps the radio), so
-    // it needed `stopPropagation` to keep the click from reaching the radio. It now sits in
-    // `.ad-rowActions`, OUTSIDE the label — so there is no bubbling path to stop, and asserting on
-    // `stopPropagation` would pin an implementation detail that no longer exists.
-    //
-    // The requirement itself is unchanged, so it is now expressed STRUCTURALLY: the rename button
-    // must not be nested inside the radio's label. This survives any future rewiring (a moved
-    // button, a different handler) because it checks the layout fact that makes bubbling possible
-    // in the first place — not the guard that happens to defeat it.
-    //
-    // Both forms are accepted, so an older layout that still uses the guard keeps passing.
+    /*
+     * 🔴 This protected a button that no longer exists (removed 2026-11-06 at the owner's request,
+     * together with its inline field). Kept as an assertion because the HAZARD outlives the button.
+     *
+     * A control inside the radio's `<label>` has its clicks forwarded to the radio — clicking
+     * 改名 used to also make that channel current. The regression to guard against is therefore
+     * "did someone put an ACTION button back inside the label", so the check is generalised from
+     * the word 改名 to any button in that subtree.
+     *
+     * ⚠️ **What survives inside the label, and why it is not a counter-example**: 更换密钥's
+     * inline form (the password input + 保存密钥 button) lives there, inside
+     * `{keying === row.id && …}`. That button acts on the key, not on the selection, and its parent
+     * `<input>` carries no `onClick={…preventDefault()}` — only CONTROLS INSIDE a label get
+     * forwarded, so typing and clicking there do not select the row. Excluding exactly that
+     * subtree is what keeps this judgement about ACTIONS rather than about markup that happens to
+     * look like one; the first version of this rewrite asserted "no `<button>` at all" and went
+     * red on that form, which is a true negative, not a violation.
+     */
     const page = pageSource()
     const labelStart = page.indexOf('className="ad-rowPick"')
     const labelEnd = page.indexOf('</label>', labelStart)
     const insideLabel = page.slice(labelStart, labelEnd)
     /*
-     * 🔴 Match the JSX EXPRESSION, not the bare word.
+     * 🔴 Strip comments before matching. A substring test cannot tell prose from code, and a note
+     * inside this very subtree mentions buttons — the first version of this assertion fired on its
+     * own documentation.
      *
-     * First run of this assertion reported the button as still inside the label — and it was
-     * wrong: the hit was my own comment (`🔴 改名 MOVED OUT of this line…`), which sits inside the
-     * label because that is where the button used to be. A substring test cannot tell prose from
-     * code, and a judgement that reads comments as evidence will keep firing on the very note that
-     * documents the fix.
-     *
-     * The rendered label text is `{renaming === row.id ? '取消' : '改名'}`, so that exact
-     * expression is what must be absent from the label.
+     * Then strip ONLY the two known-safe subtrees, by asserting their absence afterwards. A single
+     * `.*?` regex was tried first and did not reach the closing `)}` — the slice kept the key form
+     * and the check reported a true negative as a violation.
      */
-    const renameInLabel = insideLabel.includes("'改名'")
-    expect(renameInLabel).toBe(false)
-    // Belt and braces: if anyone moves it back inside the label, the guard must be back too.
-    if (renameInLabel) {
-      const button = insideLabel.slice(insideLabel.indexOf('改名'))
-      expect(button).toContain('event.stopPropagation()')
-    }
+    const withoutComments = insideLabel.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    const withoutKeyForm = withoutComments
+      .replace(/\{keying === row\.id && \([\s\S]*?\n {20}\)\}/, '')
+      .replace(/\{keySaving \? '保存中…' : '保存密钥'\}/, '')
+    expect(withoutComments).toContain('{keying === row.id && (')
+    expect(withoutKeyForm).not.toContain('保存密钥')
+    expect(withoutKeyForm).not.toContain('<button')
     // And the label must still BE the radio's label — otherwise the check above is vacuous.
-    expect(insideLabel).toContain('name="ad-current-channel"')
+    expect(withoutComments).toContain('name="ad-current-channel"')
   })
 })
 
