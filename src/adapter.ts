@@ -31,6 +31,7 @@ import type {
   LlmProviderInfo,
   LlmResolvedModelInfo,
   PreparedAdapterCall,
+  ResolvedRetryPolicy,
   StreamChunk,
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
@@ -84,6 +85,60 @@ export const PROVIDER_NAME = 'Any DeepSeek'
  * model's.
  */
 export const MODEL_INPUT_MODALITIES: readonly ChannelModality[] = V41_FLASH_CAPS.input
+
+/**
+ * Retry budget this provider asks the harness to use, per request.
+ *
+ * ## Why the provider owns this number at all
+ *
+ * The harness stores one retry policy **per registered route**, captured at registration
+ * (`dsh-llm/lib/index.js:1876`: `adapter.providerRetryPolicy(provider) ?? resolveRetryPolicy(undefined, …)`),
+ * and hands it to the `agent/request-error` waterfall on every failed attempt
+ * (`dsh-agent-loop/lib/index.js:934`). The `dsh-llm-retry` plugin is the consumer that acts on it.
+ * An adapter that does not override `providerRetryPolicy` gets the host default —
+ * **5 retries** (`dsh-llm/lib/types/retry-policy.js:12`).
+ *
+ * Owner request (2026-11-10): 「把 dsh 的模型调用重试 patch 到 100」. Behind a relay that returns
+ * intermittent 5xx (e.g. the upstream `workspace_billing_scope_unavailable` that motivated 0.0.32),
+ * five attempts can all land inside one outage window and the turn dies. A larger budget costs
+ * nothing when the relay is healthy — the policy is only consulted after a failure.
+ *
+ * ## What this deliberately does NOT change
+ *
+ * `retryableCodes`, `backoff` and `mode` stay at the host's values. Raising only the COUNT keeps
+ * the failure taxonomy exactly as the host defines it: auth and quota are still not retried, and
+ * `CONTEXT_WINDOW_EXCEEDED` still never retries (0.0.32's whole point). A policy that widened the
+ * code set would be this plugin deciding which failures are recoverable — it does not get to.
+ *
+ * ⚠️ **This is a request, not a guarantee**: the policy reaches `dsh-llm-retry` through the host's
+ * registration, so an installation without that plugin simply ignores it (still one attempt per
+ * stream, as `dsh-llm` documents).
+ */
+export const PROVIDER_MAX_RETRIES = 100
+
+/**
+ * The resolved retry policy this route registers.
+ *
+ * ⚠️ **The backoff fields are FLAT here, not nested under `backoff`.** The host's INPUT shape
+ * (`RetryPolicyConfig`) nests them, but its RESOLVED shape does not:
+ * `ResolvedNormalRetryPolicy extends ResolvedRetryBackoff` (`dsh-llm/lib/types/retry-policy.d.ts:46-50`),
+ * so the policy a `providerRetryPolicy()` implementation returns carries
+ * `initialDelayMs` / `maxDelayMs` / `jitterRatio` as siblings of `mode` and `maxRetries`. The
+ * distinction is only visible because TypeScript rejected the nested form — worth pinning here so
+ * the next reader does not "tidy" it back into a nested object that silently fails to typecheck
+ * (and, in a JavaScript build, would silently fall back to defaults instead).
+ *
+ * Values mirror `dsh-llm/lib/types/retry-policy.js:13-22` exactly; if the host changes those
+ * defaults, this stays pinned to what it says rather than silently following.
+ */
+export const PROVIDER_RETRY_POLICY: ResolvedRetryPolicy = Object.freeze({
+  mode: 'normal' as const,
+  maxRetries: PROVIDER_MAX_RETRIES,
+  retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
+  initialDelayMs: 500,
+  maxDelayMs: 10_000,
+  jitterRatio: 0.1,
+})
 
 /**
  * The reasoning levels in force for one channel.
@@ -768,6 +823,18 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 
   override providerInfo(provider: string): LlmProviderInfo {
     return { id: provider, name: PROVIDER_NAME }
+  }
+
+  /**
+   * The retry budget this route asks the harness to use.
+   *
+   * 🔴 Without this override the host substitutes its own default (5 retries) — and the failure is
+   * completely silent: requests still work, they just give up sooner. See
+   * {@link PROVIDER_RETRY_POLICY} for why 100 and what is deliberately left untouched.
+   * @returns the frozen policy captured at registration.
+   */
+  override providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
+    return PROVIDER_RETRY_POLICY
   }
 
   /**

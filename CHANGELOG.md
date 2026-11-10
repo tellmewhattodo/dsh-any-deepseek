@@ -8,6 +8,49 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.33
+
+### 新增能力：把这条路由的重试次数提到 100（owner 2026-11-10）
+
+owner：「增加个能力，把 dsh 的模型调用重试 patch 到 100」。
+
+**落点是宿主本来就留好的那个缝**，不是我们自己加一层重试：
+
+| 环节 | 位置 |
+|---|---|
+| 注册时**按路由捕获**策略 | `dsh-llm/lib/index.js:1876`：`adapter.providerRetryPolicy(provider) ?? resolveRetryPolicy(undefined, …)` |
+| 不覆盖就吃**宿主默认值** | 同一行的 `??` 分支 ⇒ `DEFAULT_MAX_RETRIES = 5`（`dsh-llm/lib/types/retry-policy.js:12`） |
+| 失败时交给谁 | `dsh-agent-loop/lib/index.js:934` 把 `retryPolicy` 投进 `agent/request-error` 瀑布 |
+| 真正执行重试 | 可选插件 `dsh-llm-retry`（`dsh-llm` 自己**从不**重跑请求） |
+
+⇒ 本仓实现 `providerRetryPolicy()` 返回 `{ mode:'normal', maxRetries:100, … }`。
+
+🔴 **只提高次数，⛔ 不动失败分类学**。`retryableCodes` / `backoff` / `mode` 全部照抄宿主现值：
+
+- `CONTEXT_WINDOW_EXCEEDED` **仍然不在可重试集合里** —— 这是 `0.0.32` 的命根子（那个码在宿主里连着
+  「整段压缩」的破坏性恢复路径，重试它等于反复邀请压缩）；
+- `AUTH` / `QUOTA` / `INVALID_*` 同样不可重试（注定失败的请求重试 100 次只是把失败拖长）；
+- `mode` 保持 `normal`：改成 `always` 会在一个永远用不了的 key 上**无限重试**。
+
+**代价与边界（如实标注）**：单点故障上最坏会重试 100 次，受 `backoff`（初始 500ms、上限 10s、抖动 10%）
+约束；上游**间歇性** 5xx（正是 `0.0.32` 处理的那个 `workspace_billing_scope_unavailable`）现在大概率能挺过去。
+⚠️ 这是**给宿主的请求，不是保证**：没装 `dsh-llm-retry` 的组合会忽略它（仍然每条流只尝试一次，符合 `dsh-llm` 文档）。
+
+**一个只有 TypeScript 会告诉你的形状**：宿主**输入**配置把退避嵌在 `backoff` 名下，而**解析后**的策略是**平铺**的
+（`ResolvedNormalRetryPolicy extends ResolvedRetryBackoff`，`dsh-llm/lib/types/retry-policy.d.ts:46-50`）⇒
+`initialDelayMs` / `maxDelayMs` / `jitterRatio` 是 `mode` 的**兄弟**而不是子对象。写成嵌套对象在 TS 下编不过，
+但在 JS 里会**静默退回默认值** —— 已在注释与用例里各钉一次。
+
+### 用例
+
+- 精确断言 `maxRetries === 100`（同时钉常量与 adapter 的答案，防两者各自漂）；
+- 断言退避三字段**平铺**且 `backoff` 为 `undefined`；
+- 🔴 断言可重试集合**恰好**是宿主那五个，且 `CONTEXT_WINDOW_EXCEEDED` / `AUTH` / `QUOTA` 均**不在**其中；
+- 断言策略**冻结**（宿主注册时捕获一次，可变对象等于事后改行为而无从观测）。
+- **负控制**：去掉覆盖（返回 `undefined`，即退回宿主默认）⇒ **精确红 3 条**。
+
+门禁：typecheck 双半 ✓ / **330 用例** ✓。
+
 ## v0.0.32
 
 ### P0：上游 503 超时被判成「上下文超限」，导致宿主整段压掉会话

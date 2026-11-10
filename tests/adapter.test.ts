@@ -3,6 +3,8 @@ import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi
 import {
   AnyDeepSeekAdapter,
   PROVIDER_ID,
+  PROVIDER_MAX_RETRIES,
+  PROVIDER_RETRY_POLICY,
   buildPiModel,
   classifyFailure,
   collectImages,
@@ -405,6 +407,62 @@ describe('classifyFailure', () => {
   it('falls back to SERVER for an unrecognized message', () => {
     expect(classifyFailure(message({ errorMessage: 'something odd happened' }))).toBe('SERVER')
     expect(classifyFailure(message())).toBe('SERVER')
+  })
+})
+
+describe('providerRetryPolicy — the retry budget the harness captures at registration', () => {
+  const adapter = (): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
+    channels: () => [channel()],
+    current: () => 'go',
+    resolveKey: async () => 'sk-test',
+    record: async () => undefined,
+    now: () => new Date(0),
+    elapsed: () => 0,
+  })
+
+  it('🔴 the route asks for 100 retries', () => {
+    // 🔴 Without the override the host substitutes its own default of 5
+    // (`dsh-llm/lib/index.js:1876` → `resolveRetryPolicy(undefined, …)`, whose
+    // `DEFAULT_MAX_RETRIES = 5`). Nothing errors: requests simply stop retrying sooner. Pinned as
+    // an EXACT number on both the constant and the adapter's answer, so neither can drift alone.
+    expect(PROVIDER_MAX_RETRIES).toBe(100)
+    const policy = adapter().providerRetryPolicy(PROVIDER_ID)
+    expect(policy.mode).toBe('normal')
+    expect(policy.mode === 'normal' ? policy.maxRetries : null).toBe(100)
+  })
+
+  it('🔴 the backoff fields are FLAT on the resolved policy, not nested under `backoff`', () => {
+    // The host's INPUT config nests them; its RESOLVED shape does not
+    // (`ResolvedNormalRetryPolicy extends ResolvedRetryBackoff`,
+    // `dsh-llm/lib/types/retry-policy.d.ts:46-50`). Sending the nested form typechecks nowhere and,
+    // in a JS build, would leave the host reading `undefined` and silently using defaults.
+    const policy = adapter().providerRetryPolicy(PROVIDER_ID) as unknown as Record<string, unknown>
+    expect(policy.initialDelayMs).toBe(500)
+    expect(policy.maxDelayMs).toBe(10_000)
+    expect(policy.jitterRatio).toBe(0.1)
+    expect(policy.backoff).toBeUndefined()
+  })
+
+  it('🔴 raising the budget does NOT widen which failures are retried', () => {
+    // The whole point of 0.0.32 is that CONTEXT_WINDOW_EXCEEDED must never drive the destructive
+    // recovery path. If this list ever gained it (or AUTH / QUOTA), the retry plugin would re-run
+    // requests that cannot succeed — and for overflow specifically, would invite the compaction.
+    const policy = adapter().providerRetryPolicy(PROVIDER_ID)
+    const codes = policy.mode === 'normal' ? [...policy.retryableCodes] : []
+    expect(codes.sort()).toEqual(['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'])
+    for (const forbidden of ['CONTEXT_WINDOW_EXCEEDED', 'AUTH', 'QUOTA', 'INVALID_CREDENTIAL', 'INVALID_REQUEST']) {
+      expect(codes, forbidden).not.toContain(forbidden)
+    }
+    // And the mode stayed `normal`: `always` would retry until success/cancel, i.e. forever on a
+    // key that will never work.
+    expect(policy.mode).toBe('normal')
+  })
+
+  it('the policy is frozen — a mutable one would let later code rewrite a captured value', () => {
+    // The host captures this object once at registration (`prepareRoutes`), so mutating it after
+    // the fact would change behaviour without any registration event to observe.
+    expect(Object.isFrozen(PROVIDER_RETRY_POLICY)).toBe(true)
+    expect(Object.isFrozen(PROVIDER_RETRY_POLICY.retryableCodes)).toBe(true)
   })
 })
 
