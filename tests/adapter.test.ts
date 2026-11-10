@@ -347,6 +347,61 @@ describe('classifyFailure', () => {
     expect(classifyFailure(message({ errorMessage: '401 Unauthorized' }))).toBe('AUTH')
   })
 
+  /**
+   * 🔴 The upstream failure that cost real conversations (S142 report, 2026-11-10).
+   *
+   * A relay answered with a Go HTTP timeout — `context deadline exceeded (Client.Timeout exceeded
+   * while awaiting headers)` — and the old cross-word rule matched `context` + `exceed`. The
+   * harness reads `CONTEXT_WINDOW_EXCEEDED` as proof of a REAL overflow and answers with the
+   * destructive path: `compactIfNeeded(…, 'context-overflow')` compacts the whole range with
+   * retain=0 and skips the threshold. Measured on a live session: three compactions in one turn at
+   * ~119509 / 44509 / 128590 tokens against an 800000 threshold and a 1M window.
+   *
+   * The string is copied VERBATIM from the log (S142's transcript, seq 16318/16392/16694). A
+   * self-authored sample would prove nothing: the defect lives in how the upstream phrased it.
+   */
+  const REAL_503_BILLING_TIMEOUT =
+    '503: {"code":"workspace_billing_scope_unavailable","message":"[code=workspace_billing_scope_unavailable] ' +
+    'resolve Billing Scope: Get \\"http://amr-api.nexu.svc.cluster.local/api/internal/billing/scope/xr2zlevr572r5bpi2upiqbxu\\": ' +
+    'context deadline exceeded (Client.Timeout exceeded while awaiting headers)","type":"workspace_billing_scope_unavailable"}'
+
+  it('🔴 a 503 with "context deadline exceeded" is NOT a context overflow', () => {
+    expect(classifyFailure(message({ stopReason: 'error', errorMessage: REAL_503_BILLING_TIMEOUT })))
+      .not.toBe('CONTEXT_WINDOW_EXCEEDED')
+    // Still an error the harness can retry — `SERVER`, not something terminal.
+    expect(classifyFailure(message({ stopReason: 'error', errorMessage: REAL_503_BILLING_TIMEOUT })))
+      .toBe('SERVER')
+  })
+
+  it('🔴 timeouts and deadline wording stay out of the overflow class', () => {
+    // Same hazard, other spellings. Every one of these contains "context" or "exceed" alone.
+    for (const text of [
+      'context deadline exceeded',
+      'etimedout: connect ETIMEDOUT',
+      'Client.Timeout exceeded while awaiting headers',
+      'request timed out after 60000ms',
+      '504 Gateway Timeout',
+      '500 Internal Server Error',
+    ]) {
+      expect(classifyFailure(message({ stopReason: 'error', errorMessage: text })), text)
+        .not.toBe('CONTEXT_WINDOW_EXCEEDED')
+    }
+  })
+
+  it('still reports a REAL overflow as overflow — the positive control', () => {
+    // Without this, "never returns CONTEXT_WINDOW_EXCEEDED" would pass while the plugin had simply
+    // stopped reporting the one condition the harness cannot recover from any other way.
+    for (const text of [
+      "This model's maximum context length is 200000 tokens",
+      'context_length_exceeded',
+      'This model\'s context window exceeded: 1048576 tokens',
+      'prompt is too long for this model',
+    ]) {
+      expect(classifyFailure(message({ stopReason: 'error', errorMessage: text })), text)
+        .toBe('CONTEXT_WINDOW_EXCEEDED')
+    }
+  })
+
   it('falls back to SERVER for an unrecognized message', () => {
     expect(classifyFailure(message({ errorMessage: 'something odd happened' }))).toBe('SERVER')
     expect(classifyFailure(message())).toBe('SERVER')

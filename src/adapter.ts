@@ -35,7 +35,7 @@ import type {
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, ToolCallId, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
 import { createHash } from 'node:crypto'
 import {
   createModels,
@@ -710,20 +710,51 @@ function finishReason(reason: 'stop' | 'length' | 'toolUse' | 'deferred'): { kin
  *
  * The harness routes retries on these codes, so the mapping matters more than the message. A
  * relay's own wording is preserved in the message; only the class is normalized here.
+ *
+ * ## 🔴 Why this delegates overflow detection instead of writing its own rule
+ *
+ * This used to be `text.includes('context') && (… includes('exceed'))`. That is a CROSS-WORD test:
+ * any sentence containing both words matches, and `CONTEXT_WINDOW_EXCEEDED` is not an ordinary
+ * error code — the harness treats it as proof that the request genuinely overflowed and answers
+ * with the destructive recovery path (`compactIfNeeded(…, 'context-overflow')`, which compacts
+ * the whole range with retain=0 and SKIPS the context threshold). Measured consequence
+ * (2026-11-10, reported by S142): an upstream `503 … context deadline exceeded (Client.Timeout
+ * exceeded while awaiting headers)` — a Go HTTP timeout, unrelated to context — was classified as
+ * overflow, and the host compacted a ~119K-token conversation three times in one turn against a
+ * 1M window and an 800K threshold.
+ *
+ * ⇒ The rule is NOT "tighten the substring" but **use the authority**. The host already ships
+ * `isContextWindowExceededError` (`@deepseek-ai/dsh-llm`), which recognises only wording that
+ * names a context bound (`context length exceeded`, `maximum context window`, `too large for the
+ * model context`, …) and is the same predicate the official adapters route on. Re-implementing it
+ * here would drift from the harness on the next upstream wording — and drift in THIS direction
+ * deletes conversation history rather than costing a retry.
+ *
+ * ## The asymmetry that orders the checks
+ *
+ * Classifying too much as `SERVER` costs a retry. Classifying too much as
+ * `CONTEXT_WINDOW_EXCEEDED` costs data. So every other test runs FIRST and overflow is last: a
+ * credential/quota/rate-limit sentence never reaches it, and an unrecognised 5xx lands on `SERVER`.
+ *
+ * The host's own adapter orders them the other way (`status >= 500` checked last, after the
+ * wording test — `dsh-llm-deepseek/lib/index.js:1779-1781`). We deliberately invert that: for the
+ * official adapter the wording rule is precise enough to be safe; ours used to be a substring, so
+ * the cheap-first ordering is what makes the failure mode one retry instead of one deletion.
  * @param message - the terminal pi-ai message.
  * @returns a harness failure code.
  */
 export function classifyFailure(message: AssistantMessage): string {
-  const text = `${message.errorMessage ?? ''} ${message.rawStopReason ?? ''}`.toLowerCase()
+  // pi-ai's own terminal reason wins: an aborted attempt is never a provider failure.
   if (message.stopReason === 'aborted') return 'ABORTED'
-  if (text.includes('context') && (text.includes('length') || text.includes('window') || text.includes('exceed'))) {
-    return 'CONTEXT_WINDOW_EXCEEDED'
-  }
-  if (text.includes('rate') && text.includes('limit')) return 'RATE_LIMIT'
-  if (text.includes('quota') || text.includes('balance') || text.includes('credit')) return 'QUOTA'
+  const text = `${message.errorMessage ?? ''} ${message.rawStopReason ?? ''}`.toLowerCase()
   if (text.includes('401') || text.includes('403') || text.includes('unauthor') || text.includes('invalid api key')) {
     return 'AUTH'
   }
+  if (text.includes('rate') && text.includes('limit')) return 'RATE_LIMIT'
+  if (text.includes('quota') || text.includes('balance') || text.includes('credit')) return 'QUOTA'
+  // Last, and only on the host's own wording rule — see the note above about what this code
+  // authorises downstream.
+  if (isContextWindowExceededError(text)) return 'CONTEXT_WINDOW_EXCEEDED'
   return 'SERVER'
 }
 

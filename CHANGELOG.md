@@ -8,6 +8,57 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.32
+
+## v0.0.32
+
+### P0：上游 503 超时被判成「上下文超限」，导致宿主整段压掉会话
+
+owner 报「上下文压缩怎么回来了，工作没法做了」——1 MB 窗口、只用了 5.7万~12.8万 token，
+压缩却反复触发，同一轮里 **3 次**。S142 定位到本仓并派单（材料：真串、复算脚本、真实会话日志）。
+
+**根因链**：上游回流一句 Go 的 HTTP 超时（与上下文无关）：
+
+```
+503: {"code":"workspace_billing_scope_unavailable","message":"… context deadline exceeded
+(Client.Timeout exceeded while awaiting headers)","type":"workspace_billing_scope_unavailable"}
+```
+
+而本仓的判据是**跨词子串**：`text.includes('context') && (…includes('exceed'))` ——
+`context`（来自 `context deadline`）＋ `exceed`（来自 `Client.Timeout exceeded`）双双命中。
+
+🔴 **这个码不是普通错误码**：宿主把它读成「确实溢出了」，走的是**破坏性恢复路径** ——
+`compactIfNeeded(…, 'context-overflow')` 整段压缩、**retain=0**、**跳过 800000 阈值**。
+同一个错误落在 `pressure` 分支本来是安全的（要过阈值），落在 overflow 分支就是**删除历史**。
+
+**修法：不是把子串收紧，是改用权威**。宿主已自带 `isContextWindowExceededError`
+（`@deepseek-ai/dsh-llm`，官方 adapter 用的就是它），它只认真正点名上下文边界的话术
+（`context length exceeded` / `maximum context window` / `too large for the model context` …）。
+本仓自己再写一条规则只会与宿主漂移 —— 而**往这个方向漂移的代价是删数据，不是多重试一次**。
+
+**检查顺序也改了，并说明为什么与官方 adapter 相反**：
+
+| | 官方 adapter（`dsh-llm-deepseek/lib/index.js:1776-1782`） | 本仓（改后） |
+|---|---|---|
+| 顺序 | 401/402/429 → **上下文话术** → 400/413 → 5xx | 401 → rate → quota → **上下文话术** → SERVER |
+| 理由 | 它的话术判据本来就精确 | 我们的话术判据曾是子串 ⇒ **贵的判据放最后**，任何被认出的 5xx / 超时都先落 `SERVER` |
+
+**非对称是这次的设计依据**：多判成 `SERVER` 最坏是多重试几次（上游本来就有 `maxRetries`）；
+多判成 `CONTEXT_WINDOW_EXCEEDED` 是**整段会话被删**。方向错得不对称，所以保守。
+
+### 用例
+
+- **负控制（真实上游串）**：把日志里那句 503 **逐字**写进用例，断言 `!== CONTEXT_WINDOW_EXCEEDED`
+  且 `=== SERVER`。另加一组同族措辞（`context deadline exceeded` / `Client.Timeout exceeded` /
+  `request timed out` / `504 Gateway Timeout` / `500 Internal Server Error`）全部不得落进溢出类。
+  ⇒ 改回旧判据 **精确红 2 条**，红的信息直指那句真串。
+- **正控制（必须留着）**：真超限串仍判 `CONTEXT_WINDOW_EXCEEDED`
+  （`maximum context length` / `context_length_exceeded` / `context window exceeded` /
+  `prompt is too long for this model`）。没有它，「永不返回溢出码」也能让负控制全绿 ——
+  那等于把唯一无法用别的方式恢复的情况也一起静默掉。
+
+门禁：typecheck 双半 ✓ / **326 用例** ✓。
+
 ## v0.0.31
 
 ### 移动端：删掉每行的「改名」，并修掉它背后的布局病根
