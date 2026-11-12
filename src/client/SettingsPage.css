@@ -311,12 +311,19 @@
   opacity: 0.6;
 }
 
-/* The live cursor and the last switch are state, not decoration — they get the full-opacity
+/* The live reading and the last switch are state, not decoration — they get the full-opacity
    treatment the balance row reserves for facts the reader cannot derive. */
 .ad-groupLive,
 .ad-groupSwitch {
   opacity: 1;
   font-size: 11px;
+}
+
+/* 🔴 「全组均不可用」 must look like the failure it is, not like a status line. The balance table
+   made the same distinction: a fact the reader must act on cannot share the muted styling of a
+   fact they can ignore. */
+.ad-groupLiveBad {
+  color: #c53030;
 }
 
 .ad-groupSwitch {

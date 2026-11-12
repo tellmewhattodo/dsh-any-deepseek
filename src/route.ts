@@ -1,22 +1,19 @@
 /**
  * route.ts — which channel serves the next request.
  *
- * ## History: v1 was deliberately manual, and 2026-11-12 reversed that
+ * ## History: manual → sticky group → priority order
  *
- * Owner decision 2026-10-19: select one channel by name, no failover. The stated trade was:
+ *  - **2026-10-19 (decision 7)**: select one channel by name, no failover. Cost stated then: a dead
+ *    relay means the user switches by hand.
+ *  - **2026-11-12 (first cut of the group)**: a sticky cursor remembered the last position, so an
+ *    outage cost one wasted attempt in total rather than one per request.
+ *  - **2026-11-12 (owner revision, current)**: 「供应组里的就按优先级来，每次切换都从 1~n 过一遍使用首个
+ *    能用的」 ⇒ **every request starts at member 1**. The cursor is gone from the routing path.
  *
- *  - **no silent re-routing** — a request never lands somewhere the user did not pick;
- *  - **no cache churn** — switching channels invalidates the prompt cache for the conversation.
- *
- * 🟢 **Owner decision 2026-11-12 replaced it with the supply group** (「当遇到余额不足的时候自动切换到
- * 组内下个供应商，确保供应不中断」). Both old costs are now ACCEPTED, and each is contained rather
- * than ignored:
- *
- *  - silent re-routing ⇒ the panel names the group as the live supplier and shows the last switch
- *    with its reason (`groupState` in `/channels`), so a reroute is visible after the fact;
- *  - cache churn ⇒ the sticky cursor means the switch happens ONCE per outage, not once per
- *    request. A group that re-tried from member 0 every time would burn a wasted 402 on the dead
- *    relay before every single request, and invalidate the cache each time.
+ * The revision is deliberate, not a simplification for its own sake: a cursor makes "who serves?"
+ * depend on history, so topping up member 1 did not put it back to work until something reset the
+ * cursor — and nothing did. A priority order that silently stops being the priority order is worse
+ * than one wasted quota refusal per call (which costs no tokens).
  *
  * ## The one selection axis
  *
@@ -35,17 +32,17 @@ export type RouteFailure =
   | { code: 'GROUP_EMPTY'; detail: string }
 
 /**
- * One attempt's channel, in trial order.
+ * Where a selection came from.
  *
- * A group selection resolves to several candidates; a plain channel selection resolves to one
- * using a different code path entirely, so `WINNER` and `MEMBER` stay distinguishable when reading
- * a log.
+ * The group arm carries the ordinary membership facts so a caller can report "member 2 of 3"
+ * without re-deriving them — but ⛔ nothing here describes a remembered position, because none is
+ * remembered.
  */
 export type RouteCandidateSource =
   /** `current` names this channel directly. */
   | { kind: 'channel'; index: number }
-  /** The supply group serves this request; `index` is its position in `members`. */
-  | { kind: 'group'; index: number; of: number; cursorAdvanced: boolean }
+  /** The supply group serves this request; `index` is the ALWAYS-ZERO starting position. */
+  | { kind: 'group'; index: number; of: number }
 
 /** Selection outcome: exactly one of the two arms is present. */
 export type RouteResult =
@@ -66,17 +63,18 @@ export type RouteResult =
  * setup problem, an unset `current` is a choice not yet made, and an empty group is a choice made
  * but not finished. Reporting them separately keeps the panel's guidance accurate.
  *
+ * 🔴 **There is no `cursor` parameter any more.** The owner's rule is "always start at member 1",
+ * and the most reliable way to guarantee that is for the function to have no way to express
+ * anything else — a parameter the caller could pass would invite the behaviour back.
  * @param channels - every resolved channel, in configuration order.
  * @param current - the configured selection (a channel id, or {@link SUPPLY_GROUP_ID}).
  * @param groupMembers - the supply group's ordered member ids.
- * @param cursor - zero-based index of the member to start from (the sticky position).
  * @returns the selected channel plus its ordered alternates, or the reason there is none.
  */
 export function selectChannel(
   channels: readonly ResolvedChannel[],
   current: string | undefined,
   groupMembers: readonly string[] = [],
-  cursor = 0,
 ): RouteResult {
   if (channels.length === 0) {
     return {
@@ -99,7 +97,7 @@ export function selectChannel(
     }
   }
 
-  if (wanted === SUPPLY_GROUP_ID) return selectFromGroup(channels, groupMembers, cursor)
+  if (wanted === SUPPLY_GROUP_ID) return selectFromGroup(channels, groupMembers)
 
   const found = channels.find((channel) => channel.id === wanted)
   if (found !== undefined) return { ok: true, channel: found, source: { kind: 'channel', index: 0 }, alternates: [] }
@@ -117,30 +115,27 @@ export function selectChannel(
 }
 
 /**
- * Resolve the supply group into an ordered candidate list.
+ * Resolve the supply group into an ordered candidate list, highest priority first.
  *
  * ## Why dangling members are SKIPPED rather than fatal
  *
  * A member id that no longer resolves (renamed id, half-written entry, deleted channel whose id
  * stayed in the list) is a repairable inconsistency. Failing the whole route would take the
  * provider offline over one stale string, which is the opposite of what a supply group is FOR.
- * The skip is not silent: the surviving candidates carry their real ids, `/channels` reports the
- * dangling ones, and the panel shows them so the user can remove them.
+ * The skip is not silent: `/channels` reports the dangling ids and the panel lists them.
  *
  * Empty-after-resolution IS fatal (`GROUP_EMPTY`): a group with nothing usable cannot serve, and
  * answering with a made-up fallback would hide a configuration the user must fix.
  * @param channels - every resolved channel.
- * @param members - the configured ordered member ids.
- * @param cursor - zero-based starting index, clamped into range.
- * @returns the ordered candidates from `cursor` onward, or a failure.
+ * @param members - the configured ordered member ids; index 0 is the highest priority.
+ * @returns the ordered candidates, or a failure.
  */
 function selectFromGroup(
   channels: readonly ResolvedChannel[],
   members: readonly string[],
-  cursor: number,
 ): RouteResult {
   const byId = new Map(channels.map((channel) => [channel.id, channel]))
-  // Keep the CONFIGURED order; drop ids nothing resolves to.
+  // Keep the CONFIGURED order — it IS the priority — and drop ids nothing resolves to.
   const resolvable = members.filter((id) => byId.has(id))
 
   if (resolvable.length === 0) {
@@ -155,13 +150,7 @@ function selectFromGroup(
     }
   }
 
-  // Clamp rather than wrap: a cursor past the end means the group was exhausted in a previous
-  // request, and restarting at member 0 would re-attempt a relay already known to be exhausted
-  // (a wasted round-trip before every request). Starting at the LAST member keeps the fallback
-  // alive while staying inside the range.
-  const start = Math.max(0, Math.min(Math.trunc(cursor), resolvable.length - 1))
-  const ordered = [...resolvable.slice(start), ...resolvable.slice(0, start)]
-  const [head, ...rest] = ordered
+  const [head, ...rest] = resolvable
   const headChannel = byId.get(head!)
   if (headChannel === undefined) {
     // Unreachable: `resolvable` was built from `byId` keys. Kept as a structural guard so a future
@@ -175,7 +164,7 @@ function selectFromGroup(
   return {
     ok: true,
     channel: headChannel,
-    source: { kind: 'group', index: start, of: resolvable.length, cursorAdvanced: start > 0 },
+    source: { kind: 'group', index: 0, of: resolvable.length },
     alternates: rest.flatMap((id) => byId.get(id) ?? []),
   }
 }

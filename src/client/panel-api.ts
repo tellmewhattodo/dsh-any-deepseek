@@ -35,13 +35,14 @@ export interface ChannelRow {
  * The supply group, as the runtime actually sees it.
  *
  * 🔴 **This is NOT a copy of the settings field.** `members` matches the document, but `serving`,
- * `position` and `lastSwitch` describe what the ROUTER has done — the sticky cursor lives in
- * memory (see `failover.ts` for why it is never persisted). Keeping both in one shape lets the
- * panel say "the group is serving, currently at member 2, because member 1 returned QUOTA" from a
- * single response.
+ * `position`, `exhausted` and `lastSwitch` describe what the ROUTER has DONE — and none of them is
+ * routing input: every request starts at member 1 (owner rule), so a position is never remembered.
+ *
+ * ⚠️ `position` is derived from the PRIORITY order, not stored. 「第 N 位」 must mean "where it sits in
+ * the list you arranged", because that is the only position a user can reason about.
  */
 export interface SupplyState {
-  /** Configured member ids, in trial order, exactly as stored. */
+  /** Configured member ids, in trial order (= priority order), exactly as stored. */
   members: string[]
   /**
    * Members that name no configured channel.
@@ -51,11 +52,31 @@ export interface SupplyState {
    * quietly becomes a one-relay group.
    */
   dangling: string[]
-  /** The member the next request starts from; absent when the group has no resolvable members. */
+  /** The member that served the last SUCCESSFUL request; absent when none has, or the last failed. */
   serving?: string
-  /** Zero-based position of {@link serving} within the resolvable members. */
+  /** Zero-based position of {@link serving} in the priority list; `-1` when nobody is serving. */
   position: number
-  /** The most recent switch since the last reset. */
+  /**
+   * Whether the most recent request walked the whole list and found nothing usable.
+   *
+   * 🔴 A separate flag rather than "serving === undefined", because those are two different facts:
+   * "no request has run yet" also has no serving member, but the group is not broken. Rendering
+   * 「全组都不可用」 on a fresh install would be a false alarm.
+   */
+  exhausted: boolean
+  /**
+   * The member the last FAILED request gave up on; absent when that request succeeded.
+   *
+   * 🔴 Read by the panel's 「全组均不可用（最后试的是 X）」 line. It is NOT the same as
+   * `lastSwitch.to`: a request can fail on a member it never switched AWAY from (a SERVER error on
+   * member 1 of 3), and there `lastSwitch` still describes an older, unrelated switch.
+   */
+  lastTried?: string
+  /**
+   * The most recent switch, since the process started or since the member list changed.
+   *
+   * ⚠️ There is no reset any more: every request starts at member 1, so nothing needs clearing.
+   * */
   lastSwitch?: { from: string; to: string; code: string; atMs: number }
 }
 
@@ -101,7 +122,9 @@ export const SUPPLY_GROUP_ID = '__group__'
  *
  * Four states, kept distinct for the same reason the balance row does it:
  *  · `供应组 · 名字` when the group serves and its current member resolves;
- *  · `供应组` alone when the group serves but has no resolvable member yet (a setup state);
+ *  · `供应组 · 全部不可用` when the last request exhausted the list — 🔴 a SEPARATE state, because
+ *    without it the panel printed 「正在使用：C」 while nobody was serving;
+ *  · `供应组` alone when the group is selected but nothing has served yet;
  *  · a label when a channel is selected and found;
  *  · `undefined` when nothing is selected — the caller renders nothing, because "no provider" is
  *    already visible as the model picker being unset and a red line here would be noise;
@@ -116,7 +139,11 @@ export function currentProviderLabel(response: ChannelsResponse | undefined): st
   if (id === undefined || id === '') return undefined
 
   if (id === SUPPLY_GROUP_ID) {
-    const serving = response.supply?.serving
+    const supply = response.supply
+    // Exhaustion is checked BEFORE `serving`: "nobody can serve" and "here is who served" are
+    // different facts, and a stale `serving` must not be printed as the current state.
+    if (supply?.exhausted === true) return '供应组 · 全部不可用'
+    const serving = supply?.serving
     if (serving === undefined) return '供应组'
     const channel = response.channels.find((candidate) => candidate.id === serving)
     // A member the router serves but the list does not describe is a transient read skew; naming
@@ -487,23 +514,6 @@ export async function fetchStats(
     return (await response.json()) as StatsResponse
   } catch {
     return empty
-  }
-}
-
-/**
- * Return the supply group to its first member.
- *
- * 🔴 The sticky cursor lives in the host's memory, so topping up the first relay is not enough to
- * get back onto it — this is the button that does it. POST because it mutates state that outlives
- * the request (a prefetched GET would silently undo a fallback the user was relying on).
- * @returns true when the host accepted the reset.
- */
-export async function resetSupplyGroup(): Promise<boolean> {
-  try {
-    const response = await fetch(`${BASE}/supply/reset`, { method: 'POST' })
-    return response.ok
-  } catch {
-    return false
   }
 }
 

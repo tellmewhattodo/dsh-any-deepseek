@@ -455,6 +455,54 @@ describe('what the owner reported, pinned as assertions', () => {
     // And the sentinel is not duplicated as a literal anywhere in the component.
     expect(page).not.toContain("'__group__'")
   })
+
+  it('🔴 nothing in the panel offers to reset a position, because none is remembered', () => {
+    /*
+     * Owner rule 2026-11-12: 「每次切换都从 1~n 过一遍使用首个能用的」.
+     *
+     * 🔴 Deleting a control is the one kind of change a source test can pin cheaply and safely, and
+     * this one has a specific hazard: a leftover button would call a route that no longer exists
+     * (`POST /supply/reset`), fail, and print 「重置供应组失败：宿主拒绝了这个请求」 — a dead control that
+     * reports a failure the user cannot act on, about state that does not exist.
+     *
+     * ⚠️ The judgement that authorised the removal (decision 83): before deleting anything, ask
+     * whether what it managed is still reachable elsewhere. The cursor's job was "get back onto
+     * member 1 after topping it up" — and with priority order that now needs no action at all.
+     */
+    const page = pageSource()
+    const api = readFileSync(join(process.cwd(), 'src', 'client', 'panel-api.ts'), 'utf-8')
+    expect(page).not.toContain('从第 1 位重新开始')
+    expect(page).not.toContain('resetGroupCursor')
+    expect(page).not.toContain('supplyResetting')
+    expect(page).not.toContain('resetSupplyGroup')
+    expect(api).not.toContain('resetSupplyGroup')
+    expect(api).not.toContain('/supply/reset')
+  })
+
+  it('🔴 the panel distinguishes 「全组均不可用」 from 「正在使用」', () => {
+    // The first cut printed 「正在使用：C」 from a stale reading after the group had walked off the
+    // end of the list. Both lines read `supply`, so the distinction has to be visible in the source:
+    // the exhausted branch must exist, and it must name the member that was tried LAST — which is
+    // `lastTried`, not `lastSwitch.to` (a request can fail without ever switching).
+    const page = pageSource()
+    expect(page).toContain('ad-groupLiveBad')
+    expect(page).toContain('全组均不可用')
+    expect(page).toContain('supply.lastTried')
+    // The 「正在使用」 line must be gated on NOT being exhausted, and on a real position: `-1`
+    // would otherwise render as 「第 0 位」.
+    expect(page).toContain('supply?.exhausted !== true')
+    expect(page).toContain('supply.position >= 0')
+  })
+
+  it('🔴 the group\'s description states the priority rule, not a rotation', () => {
+    // The old sentence (「遇到余额不足…自动换下一个」) described what the sticky cursor did. Leaving it
+    // would make the panel describe an algorithm that is no longer running — the same class of
+    // defect as a comment that claims evidence nobody gathered (decision 46).
+    const page = pageSource()
+    expect(page).toContain('每次请求都从第 1 位开始试')
+    expect(page).toContain('遇到余额不足或密钥失效才换下一位')
+    expect(page).not.toContain('供应不中断')
+  })
 })
 
 describe('what the rules demand of the wire', () => {

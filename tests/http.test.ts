@@ -130,15 +130,15 @@ function mount(deps: Partial<RouteDeps> = {}): {
 }
 
 describe('route surface', () => {
-  it('registers channels, stats, probe, balance and the supply reset under one prefix', () => {
+  it('registers channels, stats, probe and balance under one prefix', () => {
     const { routes } = mount()
+    // ⚠️ No `/supply/reset`: the sticky cursor it cleared no longer exists (every request starts at
+    // member 1), so keeping the route would leave a POST endpoint with nothing to do.
     expect(routes.sort()).toEqual([
       `${ROUTE_PREFIX}/balance`,
       `${ROUTE_PREFIX}/channels`,
       `${ROUTE_PREFIX}/probe`,
       `${ROUTE_PREFIX}/stats`,
-      // POST-only: mutates router state that outlives the request (the sticky group cursor).
-      `${ROUTE_PREFIX}/supply/reset`,
     ].sort())
   })
 })

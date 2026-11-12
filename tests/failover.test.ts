@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SupplyCursor, canSwitchAttempt, shouldFailover } from '../src/failover.js'
+import { SupplyStatus, canSwitchAttempt, shouldFailover } from '../src/failover.js'
 
 describe('shouldFailover — the switch set', () => {
   it('🔴 switches when the channel itself cannot serve', () => {
@@ -69,57 +69,93 @@ describe('canSwitchAttempt — the "may we even try another supplier" gate', () 
   })
 })
 
-describe('SupplyCursor — the sticky position', () => {
-  it('starts at the first member', () => {
-    const cursor = new SupplyCursor()
-    expect(cursor.startIndex(['a', 'b', 'c'])).toBe(0)
+describe('SupplyStatus — the display-only readings', () => {
+  it('starts empty: nothing has served, no switch, not exhausted', () => {
+    const status = new SupplyStatus()
+    expect(status.serving).toBeUndefined()
+    expect(status.lastSwitch).toBeUndefined()
+    expect(status.isExhausted).toBe(false)
+    expect(status.lastTried).toBeUndefined()
   })
 
-  it('🔴 remembers the position across requests', () => {
-    // The whole point: after member 0 runs out, later requests must NOT re-attempt it first —
-    // that would cost one wasted round-trip and one cache invalidation per request, forever.
-    const cursor = new SupplyCursor()
-    cursor.startIndex(['a', 'b', 'c'])
-    cursor.advance('a', 'b', 'QUOTA', 1000, 1)
-    expect(cursor.startIndex(['a', 'b', 'c'])).toBe(1)
+  it('records who served last', () => {
+    const status = new SupplyStatus()
+    status.noteServed('b')
+    expect(status.serving).toBe('b')
+    expect(status.isExhausted).toBe(false)
   })
 
-  it('🔴 resets when the member list changes', () => {
-    // An index is only meaningful against one list. Adding, removing or reordering members must
-    // not leave the cursor pointing at a different channel than the one that failed.
-    const cursor = new SupplyCursor()
-    cursor.startIndex(['a', 'b', 'c'])
-    cursor.advance('a', 'b', 'QUOTA', 1000, 1)
-    expect(cursor.startIndex(['a', 'b', 'c'])).toBe(1)
+  it('🔴 a served member is cleared by a later failure', () => {
+    // Otherwise the panel prints 「正在使用：B」 while nothing is serving — the exact false statement
+    // the exhausted flag was added to stop (owner-visible: the sidebar named a dead relay).
+    const status = new SupplyStatus()
+    status.noteServed('b')
+    status.noteFailure('b', true)
+    expect(status.serving).toBeUndefined()
+    expect(status.isExhausted).toBe(true)
+    expect(status.lastTried).toBe('b')
+  })
 
-    // Reordered: same members, different meaning for index 1.
-    expect(cursor.startIndex(['b', 'a', 'c'])).toBe(0)
-    // Added.
-    cursor.advance('b', 'a', 'QUOTA', 2000, 1)
-    expect(cursor.startIndex(['b', 'a', 'c', 'd'])).toBe(0)
+  it('🔴 "the group ran out" and "this request failed" are separate facts', () => {
+    // A mid-stream failure on member 1 of 3, or a SERVER error the group cannot switch on, fails the
+    // REQUEST without exhausting the GROUP: members 2 and 3 are perfectly usable next time.
+    // Rendering 「全组均不可用」 there is a false alarm that also hides the healthy members.
+    const partial = new SupplyStatus()
+    partial.noteFailure('a', false)
+    expect(partial.isExhausted).toBe(false)
+    expect(partial.lastTried).toBe('a')
+
+    const walked = new SupplyStatus()
+    walked.noteFailure('c', true)
+    expect(walked.isExhausted).toBe(true)
+  })
+
+  it('🔴 resets when the member list changes, and keeps readings when it does not', () => {
+    // A name only means something against one list. Adding, removing or reordering members must not
+    // leave the panel naming a member that is no longer where it was — or, worse, one that is gone.
+    const status = new SupplyStatus()
+    status.bind(['a', 'b', 'c'])
+    status.noteServed('b')
+    status.noteSwitch('a', 'b', 'QUOTA', 1000)
+    // Same list again: readings survive, which is what lets the panel explain a switch at all.
+    status.bind(['a', 'b', 'c'])
+    expect(status.serving).toBe('b')
+    expect(status.lastSwitch).toEqual({ from: 'a', to: 'b', code: 'QUOTA', atMs: 1000 })
+
+    // Reordered: same members, different meaning for "position 1".
+    status.bind(['b', 'a', 'c'])
+    expect(status.serving).toBeUndefined()
+    expect(status.lastSwitch).toBeUndefined()
+    expect(status.isExhausted).toBe(false)
   })
 
   it('records the last switch for the panel to explain', () => {
-    const cursor = new SupplyCursor()
-    cursor.startIndex(['a', 'b'])
-    cursor.advance('a', 'b', 'QUOTA', 4242, 1)
-    expect(cursor.last).toEqual({ from: 'a', to: 'b', code: 'QUOTA', atMs: 4242 })
-    expect(cursor.index).toBe(1)
+    const status = new SupplyStatus()
+    status.bind(['a', 'b'])
+    status.noteSwitch('a', 'b', 'QUOTA', 4242)
+    expect(status.lastSwitch).toEqual({ from: 'a', to: 'b', code: 'QUOTA', atMs: 4242 })
   })
 
-  it('reset() returns to the first member and forgets the switch', () => {
-    // Owner-facing 「从第 1 位重新开始」: topping up a relay should not require a host restart.
-    const cursor = new SupplyCursor()
-    cursor.startIndex(['a', 'b'])
-    cursor.advance('a', 'b', 'QUOTA', 1000, 1)
-    cursor.reset()
-    expect(cursor.index).toBe(0)
-    expect(cursor.last).toBeUndefined()
-    expect(cursor.startIndex(['a', 'b'])).toBe(0)
+  it('🔴 nothing it holds can change which member serves next', () => {
+    // The load-bearing property of the whole revision. `SupplyStatus` has no method that answers
+    // "where do I start?" — the only starting position in the codebase is the literal 0 in
+    // `selectFromGroup`. This test pins the SHAPE: no routing-shaped accessor exists. If a future
+    // edit adds one, the panel's readings have quietly become a cursor again, and the priority order
+    // stops being the priority order.
+    const status = new SupplyStatus()
+    status.bind(['a', 'b', 'c'])
+    status.noteServed('c')
+    status.noteFailure('c', false)
+    const surface = Object.getOwnPropertyNames(SupplyStatus.prototype).filter((name) => name !== 'constructor')
+    expect(surface.sort()).toEqual(
+      ['bind', 'isExhausted', 'lastSwitch', 'lastTried', 'noteFailure', 'noteServed', 'noteSwitch', 'serving'].sort(),
+    )
   })
 
   it('an empty member list is inert rather than throwing', () => {
-    const cursor = new SupplyCursor()
-    expect(cursor.startIndex([])).toBe(0)
+    const status = new SupplyStatus()
+    status.bind([])
+    expect(status.serving).toBeUndefined()
+    expect(status.isExhausted).toBe(false)
   })
 })

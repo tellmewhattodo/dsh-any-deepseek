@@ -93,54 +93,65 @@ describe('currentIsDangling', () => {
 
 describe('selectChannel — the supply group', () => {
   it('🔴 resolves to the first member, with the rest as ordered alternates', () => {
-    const result = selectChannel([channel('a'), channel('b'), channel('c')], SUPPLY_GROUP_ID, ['b', 'c', 'a'], 0)
+    const result = selectChannel([channel('a'), channel('b'), channel('c')], SUPPLY_GROUP_ID, ['b', 'c', 'a'])
     expect(result.ok).toBe(true)
     if (!result.ok) return
     // The GROUP's order wins, not the configuration's order.
     expect(result.channel.id).toBe('b')
     expect(result.alternates.map((entry) => entry.id)).toEqual(['c', 'a'])
-    expect(result.source).toEqual({ kind: 'group', index: 0, of: 3, cursorAdvanced: false })
+    expect(result.source).toEqual({ kind: 'group', index: 0, of: 3 })
   })
 
-  it('🔴 starts from the sticky cursor and treats earlier members as the tail', () => {
-    // Member 0 already failed, so the group is parked on 1. The rotation must still offer 2 and
-    // then wrap back to 0 — a group that stops trying is not "供应不中断".
-    const result = selectChannel([channel('a'), channel('b'), channel('c')], SUPPLY_GROUP_ID, ['a', 'b', 'c'], 1)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.channel.id).toBe('b')
-    expect(result.alternates.map((entry) => entry.id)).toEqual(['c', 'a'])
-    expect(result.source).toEqual({ kind: 'group', index: 1, of: 3, cursorAdvanced: true })
-  })
-
-  it('clamps a cursor past the end instead of wrapping to 0', () => {
-    // Wrapping to 0 would re-attempt a relay the group already gave up on, before every request.
-    const result = selectChannel([channel('a'), channel('b')], SUPPLY_GROUP_ID, ['a', 'b'], 99)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.channel.id).toBe('b')
+  it('🔴 ALWAYS starts at member 1 — there is no sticky position to carry over', () => {
+    // Owner rule 2026-11-12 (revising the first cut): 「供应组里的就按优先级来，每次切换都从 1~n 过一遍
+    // 使用首个能用的」. The first draft parked the group on whichever member served last, so topping up
+    // member 1 did not bring it back until a manual reset — history silently overrode the priority
+    // order. This test is the whole revision: two consecutive calls against the same arguments must
+    // produce the same head, with no state anywhere to change it.
+    //
+    // ⚠️ `selectChannel` has no parameter that could express a starting offset. That is deliberate
+    // (see `route.ts`): a parameter would invite the behaviour back. The negative control for this
+    // test is to make `selectFromGroup` slice from a non-zero index — exactly one case goes red.
+    const first = selectChannel([channel('a'), channel('b'), channel('c')], SUPPLY_GROUP_ID, ['a', 'b', 'c'])
+    const second = selectChannel([channel('a'), channel('b'), channel('c')], SUPPLY_GROUP_ID, ['a', 'b', 'c'])
+    expect(first.ok && second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+    expect(first.channel.id).toBe('a')
+    expect(second.channel.id).toBe('a')
+    expect(second.alternates.map((entry) => entry.id)).toEqual(['b', 'c'])
+    expect(second.source).toEqual({ kind: 'group', index: 0, of: 3 })
   })
 
   it('🔴 skips members that name no channel, keeping the configured order', () => {
     // A stale id is a repairable config problem; failing the whole route over it would take the
     // provider offline for one dangling string.
-    const result = selectChannel([channel('a'), channel('c')], SUPPLY_GROUP_ID, ['a', 'ghost', 'c'], 0)
+    const result = selectChannel([channel('a'), channel('c')], SUPPLY_GROUP_ID, ['a', 'ghost', 'c'])
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.channel.id).toBe('a')
     expect(result.alternates.map((entry) => entry.id)).toEqual(['c'])
     // The count reflects RESOLVABLE members, because that is what the group can actually walk.
-    expect(result.source).toEqual({ kind: 'group', index: 0, of: 2, cursorAdvanced: false })
+    expect(result.source).toEqual({ kind: 'group', index: 0, of: 2 })
+  })
+
+  it('a leading dangling member does not shift the head off member 1', () => {
+    // The skip must happen BEFORE the head is chosen, not by walking past it later: 「第 1 位」 is the
+    // first member that can actually serve, and a ghost above it must not consume the position.
+    const result = selectChannel([channel('a'), channel('b')], SUPPLY_GROUP_ID, ['ghost', 'a', 'b'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.channel.id).toBe('a')
+    expect(result.source).toEqual({ kind: 'group', index: 0, of: 2 })
   })
 
   it('🔴 distinguishes an empty group from a group whose members all vanished', () => {
-    const empty = selectChannel([channel('a')], SUPPLY_GROUP_ID, [], 0)
+    const empty = selectChannel([channel('a')], SUPPLY_GROUP_ID, [])
     expect(empty.ok).toBe(false)
     if (empty.ok) return
     expect(empty.failure.code).toBe('GROUP_EMPTY')
     expect(empty.failure.detail).toContain('no members')
 
-    const allDangling = selectChannel([channel('a')], SUPPLY_GROUP_ID, ['ghost', 'phantom'], 0)
+    const allDangling = selectChannel([channel('a')], SUPPLY_GROUP_ID, ['ghost', 'phantom'])
     expect(allDangling.ok).toBe(false)
     if (allDangling.ok) return
     // Both are GROUP_EMPTY, but the MESSAGE must differ: one is "configure it", the other is
@@ -150,7 +161,7 @@ describe('selectChannel — the supply group', () => {
   })
 
   it('a plain channel selection carries no alternates', () => {
-    const result = selectChannel([channel('a'), channel('b')], 'a', ['a', 'b'], 0)
+    const result = selectChannel([channel('a'), channel('b')], 'a', ['a', 'b'])
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.channel.id).toBe('a')

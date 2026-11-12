@@ -36,7 +36,6 @@ import {
   formatMeanContext,
   formatSpeed,
   formatTokens,
-  resetSupplyGroup as postSupplyReset,
   SUPPLY_GROUP_ID,
 } from './panel-api.js'
 import './SettingsPage.css'
@@ -181,17 +180,18 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [verdict, setVerdict] = useState<Record<string, ProbeResult>>({})
   const [error, setError] = useState<string | null>(null)
   /**
-   * The supply group's live state from `/channels` (members, cursor position, last switch).
+   * The supply group's live state from `/channels` (members, who served last, last switch).
    *
    * 🔴 Kept SEPARATE from `rows` and from the settings document on purpose. `rows` is "what
    * channels exist"; `supplyGroup.members` in the settings document is "what the user configured";
    * this is "what the router is actually doing". The panel needs all three to explain a fallback
    * ("member 1 ran out of quota, so requests now go to member 2") — merge any two and the third
    * question becomes unanswerable.
+   *
+   * ⚠️ There is no cursor and therefore no reset: every request starts at member 1 (owner rule
+   * 2026-11-12), so a position is derived from the priority list and never remembered.
    */
   const [supply, setSupply] = useState<SupplyState | undefined>(undefined)
-  /** Whether the balance-less "reset to first member" request is in flight. */
-  const [supplyResetting, setSupplyResetting] = useState(false)
   /** Which channel id the group editor is offering to append (empty = picker closed). */
   const [addingMember, setAddingMember] = useState('')
 
@@ -314,25 +314,6 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   /** Put the supplier back to a single channel, leaving the member list intact for next time. */
   const selectSingle = (id: string): void => {
     select(id)
-  }
-
-  /** Clear the sticky cursor so the group starts from its first member again. */
-  const resetGroupCursor = async (): Promise<void> => {
-    setSupplyResetting(true)
-    try {
-      const accepted = await postSupplyReset()
-      if (!accepted) {
-        setError('重置供应组失败：宿主拒绝了这个请求')
-        return
-      }
-      setError(null)
-      // The reset is host state, so `/channels` is the only place that can confirm it.
-      await refresh()
-    } catch (cause: unknown) {
-      setError(`重置供应组失败：${cause instanceof Error ? cause.message : String(cause)}`)
-    } finally {
-      setSupplyResetting(false)
-    }
   }
 
   /**
@@ -596,20 +577,37 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 </span>
                 {/*
                   The one-line explanation, always present. A user who has never used the group
-                  needs to know what selecting it DOES before selecting it — and "按顺序自动换" is
-                  the entire value proposition in five characters.
+                  needs to know what selecting it DOES before selecting it.
+
+                  🔴 2026-11-12 revision: the sentence now states the PRIORITY rule, not just
+                  "switches automatically". The previous wording described a rotation, which is what
+                  the sticky cursor actually did — the panel was describing the old algorithm.
                 */}
                 <span className="ad-rowDetail">
-                  按顺序使用，遇到余额不足或密钥失效时自动换下一个，供应不中断
+                  按下面的顺序使用：每次请求都从第 1 位开始试，遇到余额不足或密钥失效才换下一位
                 </span>
                 {/*
-                  🔴 The live position, shown only when the group is actually serving.
+                  🔴 The live reading, shown only when the group is actually serving.
 
-                  This is the answer to "why is my request going to the third relay?" — and it is
-                  only knowable from the ROUTER (the cursor is host memory, never in the settings
-                  document), which is why `supply` comes from `/channels` and not from the config.
+                  This is the answer to "which relay is my request going to right now?" — and it is
+                  only knowable from the ROUTER (who served last is host memory, never in the
+                  settings document), which is why `supply` comes from `/channels` and not from the
+                  config.
+
+                  ⚠️ `position + 1` because `position` is zero-based and `-1` when nobody serves.
+                  The `serving !== undefined` guard below is what keeps `-1` from rendering as
+                  「第 0 位」 — the two conditions are one fact, so they are checked together.
                 */}
-                {groupSelected && supply !== undefined && supply.serving !== undefined && (
+                {groupSelected && supply?.exhausted === true && (
+                  <span className="ad-rowDetail ad-groupLive ad-groupLiveBad">
+                    全组均不可用（最后一个试的是
+                    {supply.lastTried === undefined
+                      ? '—'
+                      : (rows.find((row) => row.id === supply.lastTried)?.label ?? supply.lastTried)}
+                    ）
+                  </span>
+                )}
+                {groupSelected && supply?.exhausted !== true && supply?.serving !== undefined && supply.position >= 0 && (
                   <span className="ad-rowDetail ad-groupLive">
                     正在使用：
                     <strong>{rows.find((row) => row.id === supply.serving)?.label ?? supply.serving}</strong>
@@ -731,21 +729,12 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 )
               })()}
               {/*
-                The reset button explains WHY it exists, because without that sentence it looks like
-                a mystery: the cursor is sticky, so after a member runs out the group stays on the
-                later member. Topping up the first relay does not bring traffic back on its own.
+                ⛔ NO reset button any more (owner rule 2026-11-12). It existed for one reason: the
+                sticky cursor lived in host memory, so after a member ran out the group stayed parked
+                on the later one and topping up the first relay did not bring traffic back on its
+                own. Every request now starts at member 1, so topping up IS the reset — there is no
+                hidden state to clear, and a button that clears nothing is a mystery control.
               */}
-              {groupSelected && members.length > 0 && (
-                <button
-                  type="button"
-                  className="ad-link"
-                  disabled={supplyResetting}
-                  title="把下一个请求重新从第 1 位开始（充值后想马上用回第一个时有意义）"
-                  onClick={() => { void resetGroupCursor() }}
-                >
-                  {supplyResetting ? '重置中…' : '从第 1 位重新开始'}
-                </button>
-              )}
             </div>
           </li>
           {rows.map((row) => {

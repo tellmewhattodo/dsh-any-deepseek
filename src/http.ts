@@ -66,12 +66,15 @@ export interface RouteDeps {
    */
   current?: () => string | undefined
   /**
-   * The supply group's live state, for the panel's group block and the sidebar readout.
+   * The supply group, as the panel needs it.
    *
-   * 🔴 Read from the RUNTIME, not from the settings document. `members` exists in both, but the
-   * *cursor position* and *last switch* exist only here — the settings document records what the
-   * user configured, while this records what the router has actually done since. The panel needs
-   * the second to explain "you are on member 2 because member 1 ran out of quota".
+   * 🔴 Read from the RUNTIME, not from the settings document. `members` exists in both, but
+   * `serving` / `lastSwitch` / `exhausted` describe what the ROUTER has actually done — the panel
+   * needs them to say 「现在在用谁／刚才换了谁／为什么换」.
+   *
+   * ⚠️ **None of these is routing input.** The owner's rule is 「每次切换都从 1~n 过一遍使用首个能用的」,
+   * so a position is never remembered. `serving` is where the last successful request landed, and
+   * `position` is that member's place in the PRIORITY list — derived from the order, not stored.
    *
    * ⚠️ Optional for the same reason {@link current} is: a caller that predates the group must keep
    * working, and its absence means "this build has no supply group", not an error.
@@ -81,15 +84,21 @@ export interface RouteDeps {
     members: readonly string[]
     /** Ids in `members` that no configured channel matches; the panel lists these for removal. */
     dangling: readonly string[]
-    /** The member the next request will start from, or undefined when the list is empty. */
-    serving: string | undefined
-    /** Zero-based position of {@link serving} within the RESOLVABLE member list. */
+    /** The member that served the last SUCCESSFUL request; absent when none has, or it failed. */
+    serving?: string
+    /** Zero-based position of {@link serving} within the priority list; `-1` when no one is serving. */
     position: number
-    /** The most recent switch, if any since the last reset. */
+    /** Whether the most recent request walked the whole list without finding a usable member. */
+    exhausted: boolean
+    /** The member the last FAILED request gave up on; absent when that request succeeded. */
+    lastTried?: string
+    /**
+     * The most recent switch, since the process started or since the member list changed.
+     *
+     * ⚠️ There is nothing to reset: every request starts at member 1, so no cursor exists to clear.
+     */
     lastSwitch?: { from: string; to: string; code: string; atMs: number }
   }
-  /** Return the supply group to its first member (owner-facing 「重置到第一个」). */
-  resetSupply?: () => void
   /** Describe a credential reference (never its value). */
   describeKey: (ref: string) => Promise<{ configured: boolean; source?: string }>
   /**
@@ -588,29 +597,6 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
           // and here is where it currently is" travels with the same response.
           ...deps.supply === undefined ? {} : { supply: deps.supply() },
         })
-      },
-    },
-    {
-      /**
-       * Return the supply group to its first member.
-       *
-       * 🔴 POST, not GET, and deliberately so: this mutates router state that outlives the request
-       * (the sticky cursor). A GET would be cacheable/prefetchable, and a prefetched "reset" would
-       * silently undo a fallback the user was relying on.
-       *
-       * Why the button exists at all: the cursor is sticky, so after a member runs out of quota
-       * the group stays on the later member until something invalidates it. Topping up a relay
-       * should not require a host restart to get back onto it.
-       */
-      kind: 'exact',
-      path: `${ROUTE_PREFIX}/supply/reset`,
-      handler: async (req, res) => {
-        if (req.method !== 'POST') {
-          json(res, 405, { error: 'POST required' })
-          return
-        }
-        deps.resetSupply?.()
-        json(res, 200, { ok: true })
       },
     },
     {

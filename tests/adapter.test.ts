@@ -15,7 +15,7 @@ import {
   type AdapterDeps,
 } from '../src/adapter.js'
 import { ADVERTISED_MODEL_ID, OPENCODE_SESSION_FALLBACK } from '../src/presets.js'
-import { SupplyCursor } from '../src/failover.js'
+import { SupplyStatus } from '../src/failover.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import type { LedgerEntry } from '../src/usage-ledger.js'
 
@@ -24,10 +24,10 @@ import type { LedgerEntry } from '../src/usage-ledger.js'
  *
  * Most tests exercise a plain channel selection, so they need the accessor to EXIST (it is a
  * required dep) without caring what it says. Group behaviour has its own tests in
- * `failover.test.ts` and `route.test.ts`.
+ * `failover.test.ts`, `route.test.ts` and `supply-exhaustion.test.ts`.
  */
-function noSupply(): { members: string[]; cursor: SupplyCursor } {
-  return { members: [], cursor: new SupplyCursor() }
+function noSupply(): { members: string[]; status: SupplyStatus } {
+  return { members: [], status: new SupplyStatus() }
 }
 
 /** A resolved channel with the fields the adapter reads. */

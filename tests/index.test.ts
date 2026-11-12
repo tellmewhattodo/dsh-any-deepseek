@@ -202,16 +202,18 @@ describe('provider registration', () => {
 })
 
 describe('http routes', () => {
-  it('registers the five panel routes under one prefix', () => {
+  it('registers the four panel routes under one prefix', () => {
     const { ctx, spy } = fakeContext()
     apply(ctx, config())
 
+    // ⚠️ Four, not five: `POST /supply/reset` is gone with the sticky cursor it existed to clear.
+    // Every request starts at member 1 (owner rule 2026-11-12), so no cursor exists to reset — and a
+    // route left behind "just in case" would be an endpoint whose whole purpose is dead.
     expect(spy.routes.map((route) => route.path).sort()).toEqual([
       '/any-deepseek/balance',
       '/any-deepseek/channels',
       '/any-deepseek/probe',
       '/any-deepseek/stats',
-      '/any-deepseek/supply/reset',
     ])
   })
 

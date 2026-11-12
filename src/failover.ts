@@ -1,47 +1,32 @@
 /**
- * failover.ts — when the supply group moves to its next member.
+ * failover.ts — when the supply group moves on, and what it remembers.
  *
- * ## The one question this file answers
+ * ## The routing rule is deliberately the simplest one that works
  *
- * Given a failed attempt's code, should the group try the next channel? That is a judgement about
- * the RELAY, not about this request, so it lives here as data rather than as an `if` inside the
- * dispatch loop where it would be invisible and untestable in isolation.
+ * Owner decision 2026-11-12 (revising the first cut, which used a sticky cursor):
+ * 「供应组里的就按优先级来，每次切换都从 1~n 过一遍使用首个能用的」.
  *
- * ## The asymmetry that orders the set
+ * ⇒ **Every request starts at member 1 and walks 1…n, using the first that works.** Position is
+ * never remembered for routing; the configured order IS the priority, with no exceptions and no
+ * hidden state to reason about.
  *
- * Switching has a real cost: a new channel means new headers, a different upstream, and a
- * **cold prompt cache** for the conversation. Switching for a transient fault therefore makes
- * things worse, because the retry layer (`providerRetryPolicy`, 100 attempts) is already the right
- * instrument for "this attempt happened to fail".
+ * ## What that costs, stated plainly
  *
- * So the test is narrow on purpose: **switch when the channel structurally cannot serve, not when
- * this attempt did not.**
+ * While member 1 is out of quota, every request pays one wasted round-trip to it before reaching
+ * the first usable member. The first cut avoided that with a sticky cursor, and the trade was
+ * rejected on purpose: a cursor makes "which member serves?" depend on history, so topping up
+ * member 1 did not put it back into use until something reset the cursor — and the recovery was
+ * invisible. One fast 402 per call is a cheaper price than a priority order that silently stops
+ * being the priority order.
  *
- * | code | switch | why |
- * |---|---|---|
- * | `QUOTA`, `ACCOUNT_QUOTA` | ✅ | the balance is gone; every later attempt fails identically |
- * | `AUTH` | ✅ | the key was rejected; it will be rejected again |
- * | `INVALID_CREDENTIAL` | ✅ | malformed key, structurally unfixable at request time |
- * | `MISSING_CREDENTIAL` | ✅ | this channel has no key at all — it cannot serve, ever |
- * | `RATE_LIMIT` | ❌ | transient by definition; retry is the correct instrument |
- * | `SERVER`, `TIMEOUT`, `TRANSPORT`, `STREAM_CLOSED` | ❌ | transient; see above |
- * | `CONTEXT_WINDOW_EXCEEDED` | ❌ **never** | see the note below |
- * | `ABORTED` | ❌ | the caller cancelled; switching would ignore their intent |
+ * ⚠️ Measured scale of that cost: a quota refusal returns without generating, so it costs no
+ * tokens and is bounded by one HTTP round-trip. It is not a re-prompt of the conversation.
  *
- * 🔴 **`CONTEXT_WINDOW_EXCEEDED` must never trigger a switch, and this is the load-bearing
- * exclusion.** Two independent reasons:
+ * ## What is still remembered — for DISPLAY only
  *
- *  1. **It cannot help.** Every group member serves the same advertised model with the same
- *     window, so the next member faces the same oversized request and fails the same way — N
- *     failures instead of one.
- *  2. **It is dangerous.** The harness treats that code as proof of a real overflow and answers
- *     with the destructive recovery path (`compactIfNeeded(…, 'context-overflow')`, whole range,
- *     retain=0, threshold skipped — the 0.0.32 incident). Switching on it turns one error into
- *     repeated trips through a path that deletes conversation history.
- *
- * Anything not listed is treated as non-switching, which is the safe default: an unknown code is
- * an unknown cause, and guessing "this relay is broken" on an unknown cause is how a healthy
- * supplier gets cycled out during a blip.
+ * The panel still needs to answer 「现在在用谁／刚才换了谁／为什么换」, and those are facts about what
+ * happened, not inputs to what happens next. They live in {@link SupplyStatus}, which the routing
+ * path writes and never reads.
  */
 
 /** Codes that mean "this channel cannot serve", as opposed to "this attempt failed". */
@@ -98,78 +83,97 @@ export function canSwitchAttempt(input: SwitchDecisionInput): boolean {
   return !input.emitted && input.hasNext && shouldFailover(input.code)
 }
 
+/** The most recent switch, for the panel to explain what happened. */
+export interface SupplySwitch {
+  from: string
+  to: string
+  code: string
+  atMs: number
+}
+
 /**
- * The sticky position inside the supply group.
+ * What the last request did, for the panel only.
  *
- * ## Why sticky rather than "always start at member 0"
- *
- * The group exists because a member runs out of balance. Once that happens, member 0 stays
- * exhausted for hours or days — so re-trying it before every single request costs one wasted
- * round-trip and one cache invalidation per request, forever. The cursor records "we already know
- * member 0 is dead" and starts after it.
- *
- * ## Why it lives in memory and is NOT persisted
- *
- * Persisting it would mean writing the settings document on every switch, and every write is a
- * revision bump — the exact mechanism behind the owner-reported 「保存时好时坏」 (decision 85).
- * A cursor is also genuinely per-process state: after a host restart, re-probing from the top is
- * the correct behaviour, because the outage may have ended.
- *
- * ## What invalidates it
- *
- * The member list itself. If the user adds, removes or reorders members, the old index no longer
- * refers to the same channel, so it is reset to 0. This is keyed on the member list's identity
- * (joined string), not on a counter — the cursor cannot silently point at a different channel.
+ * 🔴 **Nothing here is an input to routing.** The owner's rule is "always start at 1", so a value
+ * in this class can never change which member serves the next request — that is the whole point of
+ * replacing the sticky cursor. If a future edit starts reading `serving` to choose a starting
+ * index, the priority order has quietly become history-dependent again.
  */
-export class SupplyCursor {
-  /** The member list the cursor belongs to; a change resets the position. */
+export class SupplyStatus {
+  /** The member that last served successfully. */
+  private servedId: string | undefined
+  /** The last switch, if any since the process started (or since the group was re-read). */
+  private switchRecord: SupplySwitch | undefined
+  /** Whether the most recent request found no usable member at all. */
+  private exhausted = false
+  /** The member the most recent failed request gave up on. */
+  private lastTriedId: string | undefined
+  /** The member list these readings belong to; a change discards them. */
   private signature = ''
-  /** Zero-based index of the member to start from. */
-  private position = 0
-  /** The last switch, for the panel to explain what happened. */
-  private lastSwitch: { from: string; to: string; code: string; atMs: number } | undefined
 
   /**
-   * The index to start this request from, resetting when the member list changed.
+   * Bind the readings to one member list, discarding them when the list changes.
+   *
+   * Keyed on the list's content, not on a counter: after the user adds, removes or reorders
+   * members, "the member that last served" may no longer exist, and a stale name in the panel is
+   * worse than a blank line.
    * @param members - the configured ordered member ids.
-   * @returns the zero-based starting index.
    */
-  startIndex(members: readonly string[]): number {
+  bind(members: readonly string[]): void {
     const signature = members.join('\u0000')
-    if (signature !== this.signature) {
-      this.signature = signature
-      this.position = 0
-      this.lastSwitch = undefined
-    }
-    return this.position
+    if (signature === this.signature) return
+    this.signature = signature
+    this.servedId = undefined
+    this.switchRecord = undefined
+    this.exhausted = false
+    this.lastTriedId = undefined
+  }
+
+  /** Record that `id` served this request successfully. */
+  noteServed(id: string): void {
+    this.servedId = id
+    this.exhausted = false
+    this.lastTriedId = undefined
+  }
+
+  /** Record one move from a member that could not serve to the one tried next. */
+  noteSwitch(from: string, to: string, code: string, atMs: number): void {
+    this.switchRecord = { from, to, code, atMs }
   }
 
   /**
-   * Record that we moved past a member.
-   * @param from - the channel that failed.
-   * @param to - the channel that will be tried next.
-   * @param code - why it failed.
-   * @param atMs - wall clock, injected for testability.
-   * @param nextIndex - the absolute index of `to` within the member list.
+   * Record that a request ended without a serving member.
+   *
+   * 🔴 `exhausted` is NOT the same as "the request failed". A request that fails on member 1 of 4
+   * with an error the group cannot switch on (a mid-stream error, a SERVER error) has failed, but
+   * the group is not out of members — rendering 「全组均不可用」 then would be a false alarm that
+   * hides a healthy member 2..4. Only walking off the END of the list earns the exhausted flag.
+   * @param lastTried - the final member attempted, so the panel can name it.
+   * @param exhausted - whether the list ran out (true) or the request failed with members left.
    */
-  advance(from: string, to: string, code: string, atMs: number, nextIndex: number): void {
-    this.position = nextIndex
-    this.lastSwitch = { from, to, code, atMs }
+  noteFailure(lastTried: string | undefined, exhausted: boolean): void {
+    this.servedId = undefined
+    this.exhausted = exhausted
+    this.lastTriedId = lastTried
   }
 
-  /** Return to the first member (owner-facing 「重置到第一个」). */
-  reset(): void {
-    this.position = 0
-    this.lastSwitch = undefined
+  /** The member that last served, or undefined when nothing has served yet / the last request failed. */
+  get serving(): string | undefined {
+    return this.servedId
   }
 
-  /** The most recent switch, or undefined when the group has served from its first member only. */
-  get last(): { from: string; to: string; code: string; atMs: number } | undefined {
-    return this.lastSwitch
+  /** The most recent switch, or undefined when none has happened. */
+  get lastSwitch(): SupplySwitch | undefined {
+    return this.switchRecord
   }
 
-  /** The current zero-based position, for the panel's readout. */
-  get index(): number {
-    return this.position
+  /** Whether the most recent request found no usable member. */
+  get isExhausted(): boolean {
+    return this.exhausted
+  }
+
+  /** The member the last failed request gave up on; undefined when that request succeeded. */
+  get lastTried(): string | undefined {
+    return this.lastTriedId
   }
 }

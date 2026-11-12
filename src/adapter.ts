@@ -57,7 +57,7 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelApi, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
-import { SupplyCursor, canSwitchAttempt } from './failover.js'
+import { SupplyStatus, canSwitchAttempt } from './failover.js'
 import type { LedgerEntry } from './usage-ledger.js'
 
 /** The single provider route this plugin owns. */
@@ -174,14 +174,14 @@ export interface AdapterDeps {
   /** The configured selection: a channel id, or {@link SUPPLY_GROUP_ID}. */
   current: () => string | undefined
   /**
-   * The supply group and its sticky cursor.
+   * The supply group: its ordered members and the display-only status recorder.
    *
-   * Returned as one object rather than two accessors because they must be read together: a cursor
-   * index is meaningless against a different member list, and `SupplyCursor` itself resets the
-   * position when the list changes (see its note). Splitting them would let a caller pass a cursor
-   * from one list to another.
+   * 🔴 **`status` never feeds routing.** The owner's rule is "always start at member 1", so the
+   * status object only records what happened (who served, what switched) for the panel to explain.
+   * It is passed here rather than read from the group because the group's member list is the only
+   * input a routing decision is allowed to depend on.
    */
-  supply: () => { members: readonly string[]; cursor: SupplyCursor }
+  supply: () => { members: readonly string[]; status: SupplyStatus }
   /**
    * Resolve a credential REFERENCE name to its value; undefined when unconfigured.
    *
@@ -964,12 +964,10 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
    */
   override async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
     const supply = this.deps.supply()
-    const selection = selectChannel(
-      this.deps.channels(),
-      this.deps.current(),
-      supply.members,
-      supply.cursor.startIndex(supply.members),
-    )
+    // Bind the display-only readings to this member list before anything reads them, so a stale
+    // name from a previous list cannot appear in the panel mid-request.
+    supply.status.bind(supply.members)
+    const selection = selectChannel(this.deps.channels(), this.deps.current(), supply.members)
     if (!selection.ok) {
       yield failureChunk(selection.failure)
       return
@@ -977,10 +975,9 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 
     const head = selection.channel
     const candidates: readonly ResolvedChannel[] = [head, ...selection.alternates]
-    // Position of `head` inside the group's resolvable member list; -1 when a plain channel (not
-    // the group) is serving, because then there is no order to advance through.
-    const headIndex = selection.source.kind === 'group' ? selection.source.index : -1
-    const groupSize = selection.source.kind === 'group' ? selection.source.of : 0
+    // Whether this request is walking the group at all. A plain channel selection has one candidate
+    // and no order to record, so switches are display-only there (and there are none).
+    const fromGroup = selection.source.kind === 'group'
 
     /** Every attempt this request made, for the message on total failure. */
     const tried: Array<{ id: string; label: string; code: string }> = []
@@ -1116,8 +1113,12 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 
       await record()
 
-      // Success: the terminal chunk was already forwarded inside the loop.
-      if (failure === undefined) return
+      // Success: the terminal chunk was already forwarded inside the loop. Record who served, for
+      // the panel only — ⛔ nothing reads this back to choose the next starting member.
+      if (failure === undefined) {
+        if (fromGroup) supply.status.noteServed(channel.id)
+        return
+      }
 
       const code = failure.code
       tried.push({ id: channel.id, label: channel.label, code })
@@ -1125,20 +1126,21 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       const canSwitch = canSwitchAttempt({ code, emitted, hasNext: position + 1 < candidates.length })
 
       if (canSwitch) {
-        const next = candidates[position + 1]!
-        if (headIndex >= 0 && groupSize > 0) {
-          // Record the sticky position so the NEXT request starts here instead of re-attempting a
-          // relay we already know cannot serve (see `SupplyCursor`).
-          supply.cursor.advance(
-            channel.id,
-            next.id,
-            code,
-            this.deps.now().getTime(),
-            (headIndex + position + 1) % groupSize,
-          )
+        // Display-only: 「刚才 A 因为 QUOTA 换到了 B」. The NEXT request still starts at member 1
+        // (owner rule, see `route.ts`) — this line does not influence that.
+        if (fromGroup) {
+          supply.status.noteSwitch(channel.id, candidates[position + 1]!.id, code, this.deps.now().getTime())
         }
         continue
       }
+
+      // Nothing switched: either the list is exhausted or the failure was not switchable. In the
+      // group case the panel must stop claiming a member is serving, because none is.
+      //
+      // 🔴 `exhausted` is only the "ran off the end" case. A mid-stream failure on member 1 of 4
+      // leaves members 2..4 perfectly usable, and reporting 「全组均不可用」 there would be a false
+      // alarm that also hides the healthy alternatives.
+      if (fromGroup) supply.status.noteFailure(channel.id, position + 1 >= candidates.length)
 
       yield {
         type: 'finish',
@@ -1151,12 +1153,7 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
   /** The channel that will serve the next request, if any (used for model metadata). */
   private selected(): ResolvedChannel | undefined {
     const supply = this.deps.supply()
-    const selection = selectChannel(
-      this.deps.channels(),
-      this.deps.current(),
-      supply.members,
-      supply.cursor.startIndex(supply.members),
-    )
+    const selection = selectChannel(this.deps.channels(), this.deps.current(), supply.members)
     return selection.ok ? selection.channel : undefined
   }
 }

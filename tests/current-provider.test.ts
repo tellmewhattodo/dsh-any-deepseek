@@ -35,12 +35,17 @@ function channel(id: string, label: string): ChannelsResponse['channels'][number
   }
 }
 
-function response(current: string | undefined, channels: ChannelsResponse['channels']): ChannelsResponse {
+function response(
+  current: string | undefined,
+  channels: ChannelsResponse['channels'],
+  supply?: ChannelsResponse['supply'],
+): ChannelsResponse {
   return {
     channels,
     presets: [],
     model: { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
     ...current === undefined ? {} : { current },
+    ...supply === undefined ? {} : { supply },
   }
 }
 
@@ -88,5 +93,50 @@ describe('currentProviderLabel — names the channel that is actually serving', 
     expect(label).not.toContain('当前')
     expect(label).not.toContain('：')
     expect(label?.length).toBeLessThanOrEqual(20)
+  })
+})
+
+describe('currentProviderLabel — the supply group', () => {
+  const groupSupply = (over: Partial<NonNullable<ChannelsResponse['supply']>>): NonNullable<ChannelsResponse['supply']> => ({
+    members: ['opencode-go', 'ollama'],
+    dangling: [],
+    position: -1,
+    exhausted: false,
+    ...over,
+  })
+
+  it('🔴 names BOTH truths when the group is serving: a group is in charge, and this is who', () => {
+    // Owner request 2026-11-12: 「给用户供应组是一种选择的感觉」. `供应组` alone would answer "which
+    // supplier?" with "the group", which is true but useless while a request is being billed to a
+    // specific relay — and the relay's name alone would hide that the group decides.
+    const label = currentProviderLabel(
+      response('__group__', CHANNELS, groupSupply({ serving: 'ollama', position: 1 })),
+    )
+    expect(label).toBe('供应组 · Ollama Cloud-1')
+  })
+
+  it('🔴 exhaustion is a SEPARATE state, checked before `serving`', () => {
+    // The defect this pins, seen on a real screen in the first cut: the group had walked off the end
+    // of the list, nothing was serving, and the panel still printed 「正在使用：C」 from a stale
+    // reading. "Nobody can serve" and "here is who served" are different facts.
+    const label = currentProviderLabel(
+      response('__group__', CHANNELS, groupSupply({ serving: 'ollama', position: 1, exhausted: true })),
+    )
+    expect(label).toBe('供应组 · 全部不可用')
+  })
+
+  it('says just 供应组 before anything has served — not an alarm', () => {
+    // A fresh install has no serving member and is NOT broken. Rendering 「全组均不可用」 on it would
+    // be a false alarm that sends the user hunting for a problem that does not exist.
+    expect(currentProviderLabel(response('__group__', CHANNELS, groupSupply({})))).toBe('供应组')
+  })
+
+  it('falls back to 供应组 when the serving id is not in the channel list', () => {
+    // A transient read skew between the two fields of one response. Naming a channel that the same
+    // response does not describe would be worse than naming the group alone — and 未找到 would blame
+    // the group for a channel-level problem that does not exist.
+    expect(currentProviderLabel(
+      response('__group__', CHANNELS, groupSupply({ serving: 'ghost', position: 0 })),
+    )).toBe('供应组')
   })
 })

@@ -23,7 +23,7 @@ import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } fr
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { allChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME, type HarnessImageRef } from './adapter.js'
-import { SupplyCursor } from './failover.js'
+import { SupplyStatus } from './failover.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
 import { registerStatsRoutes, type WebServerLike } from './http.js'
 
@@ -166,19 +166,20 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
   }
 
   /**
-   * The one supply cursor for this plugin instance.
+   * The one supply status recorder for this plugin instance.
    *
-   * 🔴 Created ONCE, outside the request path, because its whole purpose is to remember a position
-   * across requests. Building it per call would make it a no-op that looks like a feature.
+   * 🔴 Created ONCE, outside the request path, because its job is to describe what happened across
+   * requests (who served last, what switched). It is **display-only**: nothing reads it back to
+   * choose which member serves next — the owner's rule is "always start at member 1" (see
+   * `route.ts`), and this object must never become a routing input.
    */
-  const supplyCursor = new SupplyCursor()
+  const supplyStatus = new SupplyStatus()
 
   /**
-   * The supply group and its cursor, read fresh each request.
+   * The supply group, read fresh each request.
    *
    * `members` is read from the live config (not captured at apply time) for the same reason
-   * `channels` is: the panel edits it while the plugin runs. `SupplyCursor` resets itself whenever
-   * the member list changes, so a stale index can never point at a different channel.
+   * `channels` is: the panel edits it while the plugin runs.
    */
   const supply = () => {
     const live = (ctx as unknown as { fiber?: { config?: PluginConfigValue } }).fiber?.config ?? config
@@ -188,7 +189,7 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
     const members = Array.isArray(group?.members)
       ? group!.members.filter((id): id is string => typeof id === 'string')
       : []
-    return { members, cursor: supplyCursor }
+    return { members, status: supplyStatus }
   }
 
   /**
@@ -289,29 +290,31 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
       advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
       // The live selection, so the sidebar can name the active provider (owner 2026-11-03).
       current,
-      // The supply group's runtime state (owner 2026-11-12). Split into two accessors because the
-      // panel needs both the config-derived member list AND the router-derived cursor position,
-      // and `supply()` already holds both — `dangling` is computed here because only this layer
-      // knows which ids actually resolved.
+      // The supply group, as the panel needs it: the configured order (which IS the priority) plus
+      // what the last request actually did. 🔴 `serving` / `lastSwitch` / `exhausted` are readings,
+      // not routing state — see `SupplyStatus`.
       supply: () => {
-        const { members, cursor } = supply()
+        const { members, status } = supply()
+        status.bind(members)
         const live = channels()
         const known = new Set(live.map((channel) => channel.id))
-        const resolvable = members.filter((id) => known.has(id))
-        // `startIndex` is read-only in effect: it resets the cursor when the list changed, which is
-        // exactly the invalidation we want before reporting a position.
-        const position = resolvable.length === 0 ? 0 : cursor.startIndex(members)
-        const serving = resolvable.length === 0 ? undefined : resolvable[position]
-        const last = cursor.last
+        const order = members.filter((id) => known.has(id))
+        const serving = status.serving
+        // Position is derived from the ORDER, not remembered: 「第 N 位」 must mean "where it sits in
+        // the priority list", which is the only position a user can reason about. `-1` = nobody.
+        const position = serving === undefined ? -1 : order.indexOf(serving)
+        const last = status.lastSwitch
+        const lastTried = status.lastTried
         return {
           members,
           dangling: members.filter((id) => !known.has(id)),
-          serving,
+          ...serving === undefined ? {} : { serving },
           position,
+          exhausted: status.isExhausted,
+          ...lastTried === undefined ? {} : { lastTried },
           ...last === undefined ? {} : { lastSwitch: last },
         }
       },
-      resetSupply: () => supplyCursor.reset(),
       describeKey: async (ref: string) => {
         const seam = credentials()
         if (seam?.describe === undefined) return { configured: process.env[ref] !== undefined, source: 'env' }
