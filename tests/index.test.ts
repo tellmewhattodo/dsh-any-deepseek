@@ -202,7 +202,7 @@ describe('provider registration', () => {
 })
 
 describe('http routes', () => {
-  it('registers the four panel routes under one prefix', () => {
+  it('registers the five panel routes under one prefix', () => {
     const { ctx, spy } = fakeContext()
     apply(ctx, config())
 
@@ -211,6 +211,7 @@ describe('http routes', () => {
       '/any-deepseek/channels',
       '/any-deepseek/probe',
       '/any-deepseek/stats',
+      '/any-deepseek/supply/reset',
     ])
   })
 

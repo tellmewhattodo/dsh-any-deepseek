@@ -31,36 +31,82 @@ export interface ChannelRow {
   keyRef?: string
 }
 
+/**
+ * The supply group, as the runtime actually sees it.
+ *
+ * 🔴 **This is NOT a copy of the settings field.** `members` matches the document, but `serving`,
+ * `position` and `lastSwitch` describe what the ROUTER has done — the sticky cursor lives in
+ * memory (see `failover.ts` for why it is never persisted). Keeping both in one shape lets the
+ * panel say "the group is serving, currently at member 2, because member 1 returned QUOTA" from a
+ * single response.
+ */
+export interface SupplyState {
+  /** Configured member ids, in trial order, exactly as stored. */
+  members: string[]
+  /**
+   * Members that name no configured channel.
+   *
+   * Shown rather than silently dropped: the router skips them to stay online, but a stale id is a
+   * configuration the user must fix, and a group that silently shrinks is how a "three-relay group"
+   * quietly becomes a one-relay group.
+   */
+  dangling: string[]
+  /** The member the next request starts from; absent when the group has no resolvable members. */
+  serving?: string
+  /** Zero-based position of {@link serving} within the resolvable members. */
+  position: number
+  /** The most recent switch since the last reset. */
+  lastSwitch?: { from: string; to: string; code: string; atMs: number }
+}
+
 /** `/any-deepseek/channels` response. */
 export interface ChannelsResponse {
   channels: ChannelRow[]
   presets: Array<{ id: string; displayName: string }>
   model: { id: string; name: string }
   /**
-   * The channel id currently serving requests (owner request 2026-11-03).
+   * The channel id currently serving requests (owner request 2026-11-03), or the
+   * {@link SUPPLY_GROUP_ID} sentinel when the supply group is serving.
    *
    * Absent — not empty — when nothing is selected. The sidebar distinguishes "no provider chosen"
    * from "a provider named ''", because the first is a setup state the reader can fix and the
    * second is a malformed config.
    */
   current?: string
+  /** The supply group's runtime state; absent on a host build that predates the feature. */
+  supply?: SupplyState
 }
 
 /**
- * The label to show for the channel that is serving requests right now.
+ * The `current` sentinel meaning "the supply group serves requests".
+ *
+ * ⚠️ Must match `SUPPLY_GROUP_ID` in `src/config.ts`. It is duplicated rather than imported
+ * because that module pulls in schemastery and the node runtime; the client bundle must not carry
+ * either. The value is asserted in a test so the two cannot drift silently.
+ */
+export const SUPPLY_GROUP_ID = '__group__'
+
+/**
+ * The label the sidebar shows for the live supplier.
  *
  * 🔴 Owner request 2026-11-03: the sidebar should name the live provider so it does not require
  * opening Settings. Owner constraint the same day: 「左下角空间小，字少点，表意明确即可」 — the seat is
  * 256px wide and already carries a usage figure, so this returns the SHORTEST true sentence:
  * just the channel's own label, with no 「当前供应商：」 prefix on every line.
  *
- * Three states, kept distinct for the same reason the balance row does it:
+ * 🟢 Owner request 2026-11-12 extended this to the supply group (「给用户供应组是一种选择的感觉」):
+ * when the group is serving, the answer is not one channel but "the group, currently on X". That
+ * fact is shown as `供应组 · <label>` — 4 characters of prefix, which fits the 256px seat, and names
+ * BOTH truths: a group is in charge, and this is who it is talking to right now.
+ *
+ * Four states, kept distinct for the same reason the balance row does it:
+ *  · `供应组 · 名字` when the group serves and its current member resolves;
+ *  · `供应组` alone when the group serves but has no resolvable member yet (a setup state);
  *  · a label when a channel is selected and found;
  *  · `undefined` when nothing is selected — the caller renders nothing, because "no provider" is
  *    already visible as the model picker being unset and a red line here would be noise;
- *  · `未找到` when `current` names a channel that no longer exists. That one IS worth a word: the
- *    router will fall back, so requests still work, but the user's selection is pointing at
- *    something gone and only they can fix it.
+ *  · `未找到` when `current` names a channel that no longer exists. That one IS worth a word: only
+ *    the user can fix a dangling selection.
  * @param response - the `/channels` body, or undefined before it loads.
  * @returns the short label, or undefined when there is nothing to say.
  */
@@ -68,6 +114,17 @@ export function currentProviderLabel(response: ChannelsResponse | undefined): st
   if (response === undefined) return undefined
   const id = response.current
   if (id === undefined || id === '') return undefined
+
+  if (id === SUPPLY_GROUP_ID) {
+    const serving = response.supply?.serving
+    if (serving === undefined) return '供应组'
+    const channel = response.channels.find((candidate) => candidate.id === serving)
+    // A member the router serves but the list does not describe is a transient read skew; naming
+    // the group alone is still true, so do not fall through to `未找到` (that would blame the
+    // group for a channel-level problem that does not exist).
+    return channel === undefined ? '供应组' : `供应组 · ${channel.label}`
+  }
+
   const channel = response.channels.find((candidate) => candidate.id === id)
   // A dangling selection is a real, fixable problem, so it gets one short word rather than
   // silence — silence would look identical to "nothing configured".
@@ -430,6 +487,23 @@ export async function fetchStats(
     return (await response.json()) as StatsResponse
   } catch {
     return empty
+  }
+}
+
+/**
+ * Return the supply group to its first member.
+ *
+ * 🔴 The sticky cursor lives in the host's memory, so topping up the first relay is not enough to
+ * get back onto it — this is the button that does it. POST because it mutates state that outlives
+ * the request (a prefetched GET would silently undo a fallback the user was relying on).
+ * @returns true when the host accepted the reset.
+ */
+export async function resetSupplyGroup(): Promise<boolean> {
+  try {
+    const response = await fetch(`${BASE}/supply/reset`, { method: 'POST' })
+    return response.ok
+  } catch {
+    return false
   }
 }
 

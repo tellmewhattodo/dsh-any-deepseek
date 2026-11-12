@@ -57,6 +57,7 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelApi, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { selectChannel, type RouteFailure } from './route.js'
+import { SupplyCursor, canSwitchAttempt } from './failover.js'
 import type { LedgerEntry } from './usage-ledger.js'
 
 /** The single provider route this plugin owns. */
@@ -170,8 +171,17 @@ export function effectiveReasoningEfforts(
 export interface AdapterDeps {
   /** Enabled, resolved channels in configuration order. */
   channels: () => readonly ResolvedChannel[]
-  /** The configured channel id. */
+  /** The configured selection: a channel id, or {@link SUPPLY_GROUP_ID}. */
   current: () => string | undefined
+  /**
+   * The supply group and its sticky cursor.
+   *
+   * Returned as one object rather than two accessors because they must be read together: a cursor
+   * index is meaningless against a different member list, and `SupplyCursor` itself resets the
+   * position when the list changes (see its note). Splitting them would let a caller pass a cursor
+   * from one list to another.
+   */
+  supply: () => { members: readonly string[]; cursor: SupplyCursor }
   /**
    * Resolve a credential REFERENCE name to its value; undefined when unconfigured.
    *
@@ -928,155 +938,252 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     }
   }
 
+  /**
+   * Stream one request, walking the supply group when a member cannot serve.
+   *
+   * ## The shape, and why it is a loop rather than recursion
+   *
+   * A request gets an ORDERED candidate list: the head (whatever `current` names, or the group's
+   * sticky member) plus, when the group is serving, every remaining member after it. Each round
+   * is one complete attempt — key, wire, stream, ledger line — and the loop only continues when
+   * the attempt failed in a way that says "this CHANNEL cannot serve" (`shouldFailover`) *and*
+   * nothing has been handed to the consumer yet.
+   *
+   * 🔴 **The "nothing emitted yet" precondition is not a nicety; without it this feature corrupts
+   * messages.** Once a chunk has been yielded it is gone — the harness has written it to the
+   * session and will show it to the user. Switching suppliers afterwards would concatenate two
+   * different models' output into one message, with no way to tell which sentence came from
+   * where. So a mid-stream failure is reported, never retried on another relay; only a failure
+   * that happened BEFORE the first chunk is switchable.
+   *
+   * ## Ledger: one line per ATTEMPT
+   *
+   * Not one per request. "This request cost 40k tokens at relay A and then 2k at relay B" is a
+   * fact about two accounts, and collapsing it into one line under B's name would make A's spend
+   * invisible — the exact class of silent miscount this ledger exists to prevent (decision 3).
+   */
   override async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
-    const startedAt = this.deps.elapsed()
-    let channel: ResolvedChannel | undefined
-    let outcome: CallOutcome = { ok: false, code: 'UNKNOWN', usage: null }
-    let recorded = false
-    /**
-     * Time to the first streamed block, in ms from request start.
-     *
-     * 🔴 Owner request (2026-10-22): 「能加上 token 速度统计吗」. Throughput cannot be recovered
-     * from the totals alone — `output / totalMs` folds in queueing and time-to-first-token, so a
-     * relay with slow first-token but fast generation looks identical to a uniformly slow one.
-     * Recording the split makes the two visible separately, and both numbers are already
-     * measurable at this boundary: the first `block-start` is the moment generation began.
-     *
-     * Guards that matter: it is measured ONCE (first block only), and only for a call that got
-     * that far — an error before any block leaves it undefined rather than reporting 0, which
-     * would read as "instant first token".
-     */
-    let firstTokenMs: number | undefined
-
-    const finish = async (): Promise<void> => {
-      if (recorded || channel === undefined) return
-      recorded = true
-      await this.deps.record({
-        at: this.deps.now().toISOString(),
-        channel: channel.id,
-        model: channel.model,
-        ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
-        ...options.purpose === undefined ? {} : { purpose: options.purpose },
-        ...firstTokenMs === undefined ? {} : { firstTokenMs },
-        ok: outcome.ok,
-        ms: Math.max(0, Math.round(this.deps.elapsed() - startedAt)),
-        usage: outcome.usage === null ? null : {
-          input: outcome.usage.inputTokens,
-          output: outcome.usage.outputTokens,
-          cacheRead: outcome.usage.cacheReadTokens ?? 0,
-          cacheWrite: outcome.usage.cacheWriteTokens ?? 0,
-          reasoning: outcome.usage.reasoningTokens ?? 0,
-          ...outcome.usage.totalTokens === undefined ? {} : { total: outcome.usage.totalTokens },
-        },
-        ...outcome.code === undefined ? {} : { code: outcome.code },
-      })
-    }
-
-    // 1. Which channel serves this request.
-    const selection = selectChannel(this.deps.channels(), this.deps.current())
+    const supply = this.deps.supply()
+    const selection = selectChannel(
+      this.deps.channels(),
+      this.deps.current(),
+      supply.members,
+      supply.cursor.startIndex(supply.members),
+    )
     if (!selection.ok) {
       yield failureChunk(selection.failure)
       return
     }
-    channel = selection.channel
 
-    // 2. The key. A literal one is read from the channel entry; a legacy reference is resolved
-    //    per request so a rotation reaches the next call.
-    const key = channel.credential.kind === 'literal'
-      ? channel.credential.value
-      : channel.credential.kind === 'reference'
-        ? await this.deps.resolveKey(channel.credential.ref)
-        : undefined
-    if (key === undefined || key === '') {
-      outcome = { ok: false, code: 'MISSING_CREDENTIAL', usage: null }
+    const head = selection.channel
+    const candidates: readonly ResolvedChannel[] = [head, ...selection.alternates]
+    // Position of `head` inside the group's resolvable member list; -1 when a plain channel (not
+    // the group) is serving, because then there is no order to advance through.
+    const headIndex = selection.source.kind === 'group' ? selection.source.index : -1
+    const groupSize = selection.source.kind === 'group' ? selection.source.of : 0
+
+    /** Every attempt this request made, for the message on total failure. */
+    const tried: Array<{ id: string; label: string; code: string }> = []
+
+    for (let position = 0; position < candidates.length; position++) {
+      const channel = candidates[position]!
+      const attemptStartedAt = this.deps.elapsed()
+      let outcome: CallOutcome = { ok: false, code: 'UNKNOWN', usage: null }
+      let firstTokenMs: number | undefined
+      /** Whether anything reached the consumer; once true, switching is forbidden. */
+      let emitted = false
+      /** The terminal error, held back so a switchable one can be swallowed. */
+      let failure: { message: string; code: string } | undefined
+
+      const record = async (): Promise<void> => {
+        await this.deps.record({
+          at: this.deps.now().toISOString(),
+          channel: channel.id,
+          model: channel.model,
+          ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+          ...options.purpose === undefined ? {} : { purpose: options.purpose },
+          ...firstTokenMs === undefined ? {} : { firstTokenMs },
+          ok: outcome.ok,
+          ms: Math.max(0, Math.round(this.deps.elapsed() - attemptStartedAt)),
+          usage: outcome.usage === null ? null : {
+            input: outcome.usage.inputTokens,
+            output: outcome.usage.outputTokens,
+            cacheRead: outcome.usage.cacheReadTokens ?? 0,
+            cacheWrite: outcome.usage.cacheWriteTokens ?? 0,
+            reasoning: outcome.usage.reasoningTokens ?? 0,
+            ...outcome.usage.totalTokens === undefined ? {} : { total: outcome.usage.totalTokens },
+          },
+          ...outcome.code === undefined ? {} : { code: outcome.code },
+        })
+      }
+
+      // 1. The key. A literal one is read from the channel entry; a legacy reference is resolved
+      //    per request so a rotation reaches the next call.
+      const key = channel.credential.kind === 'literal'
+        ? channel.credential.value
+        : channel.credential.kind === 'reference'
+          ? await this.deps.resolveKey(channel.credential.ref)
+          : undefined
+
+      if (key === undefined || key === '') {
+        // A channel with no key is the textbook switchable case: it cannot serve, and no retry
+        // will change that. In a group the next member is a strictly better answer than an error.
+        outcome = { ok: false, code: 'MISSING_CREDENTIAL', usage: null }
+        failure = { message: `channel "${channel.id}" has no key configured`, code: 'MISSING_CREDENTIAL' }
+      } else {
+        // 2–4. Build a fresh collection and dispatch.
+        //
+        // 🔴 Fresh PER ATTEMPT, not hoisted out of the loop. The collection captures this channel's
+        // baseURL, model and auth; reusing one across members would send the second member's
+        // request to the first member's endpoint.
+        const model = buildPiModel(channel)
+        const models = createModels()
+        models.setProvider(createProvider({
+          id: PROVIDER_ID,
+          name: PROVIDER_NAME,
+          baseUrl: channel.baseURL,
+          auth: { apiKey: { name: channel.label, resolve: async () => ({ auth: { apiKey: key } }) } },
+          models: [model],
+          // 🔴 A MAP, not a single implementation: this is what makes `channel.api` take effect.
+          api: apiImplementations(),
+        }))
+
+        /**
+         * Per-request headers.
+         *
+         * Two things OpenCode Go requires cannot live in a preset, because neither is a constant:
+         *
+         *  · `x-opencode-session` must be STABLE PER CONVERSATION, and it must ALWAYS be present.
+         *    Both halves matter, and getting only the first produced a 400: an earlier version read
+         *    `options.sessionId` and sent nothing when it was absent — and the harness does not stamp
+         *    one on every request. So the value is a stable hash of the harness session id when we
+         *    have one, and a constant when we do not. A hash keeps the id opaque while staying stable
+         *    for the same conversation, which is all the endpoint's affinity key needs.
+         *  · `User-Agent` must identify THIS client rather than the generic SDK. pi-ai sets its own,
+         *    so the preset's static headers alone can never satisfy that rule.
+         *
+         * The construction lives in `requestHeadersFor` so the panel's probe sends the same thing.
+         */
+        const requestHeaders = requestHeadersFor(channel, options.sessionId)
+
+        const streamOptions: SimpleStreamOptions = {
+          apiKey: key,
+          signal: options.signal,
+          ...options.temperature === undefined ? {} : { temperature: options.temperature },
+          ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
+          // The harness's selected level goes one layer down into pi-ai's vocabulary. Passing it
+          // through is the whole feature: without it `reasoning` was a boolean with no value, so
+          // every request used the relay's own default and the picker's choice was discarded.
+          ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort as SimpleStreamOptions['reasoning'] },
+          ...Object.keys(requestHeaders).length === 0 ? {} : { headers: requestHeaders },
+        }
+
+        try {
+          // 🔴 Images are collected BEFORE the conversion, because the conversion is synchronous and
+          // the attachment store is not. Skipping this step is what made "the model can see images"
+          // false while the panel said the model was multimodal.
+          const images = await collectImages(options, this.deps.readImage)
+          const events = models.streamSimple(model, toPiContext(options, images), streamOptions)
+          for await (const chunk of toStreamChunks(events, (observed) => { outcome = observed })) {
+            if (chunk.type === 'finish') {
+              // The terminal chunk is NOT forwarded yet: an error that arrives before any content
+              // may still be swallowed by a group switch, and yielding it first would tell the
+              // harness the request is over.
+              if (chunk.reason.kind === 'error') {
+                failure = { message: chunk.reason.failure.message, code: chunk.reason.failure.code }
+                break
+              }
+              yield chunk
+              break
+            }
+            // The first block is the moment the relay started emitting content, so it is what
+            // separates "slow to start" from "slow to generate".
+            if (firstTokenMs === undefined && chunk.type === 'block-start') {
+              firstTokenMs = Math.max(0, Math.round(this.deps.elapsed() - attemptStartedAt))
+            }
+            emitted = true
+            yield chunk
+          }
+        } catch (error) {
+          // A thrown transport error never emitted anything (the stream did not get going), so it
+          // stays switchable — but `shouldFailover` keeps TRANSPORT out of the switch set on
+          // purpose: a network blip is the retry layer's job, not a reason to abandon a relay.
+          const message = error instanceof Error ? error.message : String(error)
+          outcome = { ok: false, code: 'TRANSPORT', usage: null }
+          failure = { message, code: 'TRANSPORT' }
+        }
+      }
+
+      await record()
+
+      // Success: the terminal chunk was already forwarded inside the loop.
+      if (failure === undefined) return
+
+      const code = failure.code
+      tried.push({ id: channel.id, label: channel.label, code })
+
+      const canSwitch = canSwitchAttempt({ code, emitted, hasNext: position + 1 < candidates.length })
+
+      if (canSwitch) {
+        const next = candidates[position + 1]!
+        if (headIndex >= 0 && groupSize > 0) {
+          // Record the sticky position so the NEXT request starts here instead of re-attempting a
+          // relay we already know cannot serve (see `SupplyCursor`).
+          supply.cursor.advance(
+            channel.id,
+            next.id,
+            code,
+            this.deps.now().getTime(),
+            (headIndex + position + 1) % groupSize,
+          )
+        }
+        continue
+      }
+
       yield {
         type: 'finish',
-        reason: {
-          kind: 'error',
-          failure: {
-            message: `channel "${channel.id}" has no key configured`,
-            code: 'MISSING_CREDENTIAL',
-          },
-        },
+        reason: { kind: 'error', failure: { message: describeFailure(failure, tried, emitted), code } },
       }
-      await finish()
       return
     }
-
-    // 3–5. Build a fresh collection and dispatch.
-    const model = buildPiModel(channel)
-    const models = createModels()
-    models.setProvider(createProvider({
-      id: PROVIDER_ID,
-      name: PROVIDER_NAME,
-      baseUrl: channel.baseURL,
-      auth: { apiKey: { name: channel.label, resolve: async () => ({ auth: { apiKey: key } }) } },
-      models: [model],
-      // 🔴 A MAP, not a single implementation: this is what makes `channel.api` take effect.
-      api: apiImplementations(),
-    }))
-
-    /**
-     * Per-request headers.
-     *
-     * Two things OpenCode Go requires cannot live in a preset, because neither is a constant:
-     *
-     *  · `x-opencode-session` must be STABLE PER CONVERSATION, and it must ALWAYS be present.
-     *    Both halves matter, and getting only the first produced a 400: an earlier version read
-     *    `options.sessionId` and sent nothing when it was absent — and the harness does not stamp
-     *    one on every request. So the value is a stable hash of the harness session id when we
-     *    have one, and a constant when we do not. A hash keeps the id opaque while staying stable
-     *    for the same conversation, which is all the endpoint's affinity key needs.
-     *  · `User-Agent` must identify THIS client rather than the generic SDK. pi-ai sets its own,
-     *    so the preset's static headers alone can never satisfy that rule.
-     *
-     * The construction lives in `requestHeadersFor` so the panel's probe sends the same thing.
-     */
-    const requestHeaders = requestHeadersFor(channel, options.sessionId)
-
-    const streamOptions: SimpleStreamOptions = {
-      apiKey: key,
-      signal: options.signal,
-      ...options.temperature === undefined ? {} : { temperature: options.temperature },
-      ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
-      // The harness's selected level goes one layer down into pi-ai's vocabulary. Passing it
-      // through is the whole feature: without it `reasoning` was a boolean with no value, so
-      // every request used the relay's own default and the picker's choice was discarded.
-      ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort as SimpleStreamOptions['reasoning'] },
-      ...Object.keys(requestHeaders).length === 0 ? {} : { headers: requestHeaders },
-    }
-
-    try {
-      // 🔴 Images are collected BEFORE the conversion, because the conversion is synchronous and
-      // the attachment store is not. Skipping this step is what made "the model can see images"
-      // false while the panel said the model was multimodal.
-      const images = await collectImages(options, this.deps.readImage)
-      const events = models.streamSimple(model, toPiContext(options, images), streamOptions)
-      for await (const chunk of toStreamChunks(events, (observed) => { outcome = observed })) {
-        // The first block is the moment the relay started emitting content, so it is what
-        // separates "slow to start" from "slow to generate".
-        if (firstTokenMs === undefined && chunk.type === 'block-start') {
-          firstTokenMs = Math.max(0, Math.round(this.deps.elapsed() - startedAt))
-        }
-        yield chunk
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      outcome = { ok: false, code: 'TRANSPORT', usage: null }
-      yield {
-        type: 'finish',
-        reason: { kind: 'error', failure: { message, code: 'TRANSPORT' } },
-      }
-    } finally {
-      await finish()
-    }
   }
 
-  /** The channel the panel has selected, if any (used for model metadata). */
+  /** The channel that will serve the next request, if any (used for model metadata). */
   private selected(): ResolvedChannel | undefined {
-    const selection = selectChannel(this.deps.channels(), this.deps.current())
+    const supply = this.deps.supply()
+    const selection = selectChannel(
+      this.deps.channels(),
+      this.deps.current(),
+      supply.members,
+      supply.cursor.startIndex(supply.members),
+    )
     return selection.ok ? selection.channel : undefined
   }
+}
+
+/**
+ * Turn a terminal failure into the message the user reads.
+ *
+ * 🔴 The attempt trail is appended only when the group actually walked (`tried.length > 1`). A
+ * single-attempt failure gains nothing from "tried: X" — the user already knows which supplier was
+ * live — and adding it unconditionally would bury the real error under routing noise.
+ * @param failure - the last attempt's error.
+ * @param tried - every attempt, in order.
+ * @param emitted - whether content had already reached the consumer.
+ * @returns the message to send to the harness.
+ */
+function describeFailure(
+  failure: { message: string; code: string },
+  tried: ReadonlyArray<{ label: string; code: string }>,
+  emitted: boolean,
+): string {
+  if (tried.length <= 1) return failure.message
+  const trail = tried.map((attempt) => `${attempt.label}(${attempt.code})`).join(' → ')
+  // The `emitted` case is worth spelling out: the user will otherwise reasonably ask why the
+  // group did not simply move to the next supplier like it did last time.
+  return emitted
+    ? `${failure.message} — already streaming from ${tried[tried.length - 1]!.label}, so the group did not switch (tried: ${trail})`
+    : `${failure.message} — every supply-group member failed (tried: ${trail})`
 }
 
 /** Turn a routing failure into a terminal chunk. */

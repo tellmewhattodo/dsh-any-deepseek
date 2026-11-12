@@ -15,8 +15,20 @@ import {
   type AdapterDeps,
 } from '../src/adapter.js'
 import { ADVERTISED_MODEL_ID, OPENCODE_SESSION_FALLBACK } from '../src/presets.js'
+import { SupplyCursor } from '../src/failover.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import type { LedgerEntry } from '../src/usage-ledger.js'
+
+/**
+ * A `supply` accessor that reports "no group configured".
+ *
+ * Most tests exercise a plain channel selection, so they need the accessor to EXIST (it is a
+ * required dep) without caring what it says. Group behaviour has its own tests in
+ * `failover.test.ts` and `route.test.ts`.
+ */
+function noSupply(): { members: string[]; cursor: SupplyCursor } {
+  return { members: [], cursor: new SupplyCursor() }
+}
 
 /** A resolved channel with the fields the adapter reads. */
 function channel(overrides: Partial<ResolvedChannel> = {}): ResolvedChannel {
@@ -228,6 +240,7 @@ describe('listModels — the provider catalog', () => {
   const adapterWith = (overrides: Partial<AdapterDeps> = {}): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
     channels: () => [channel()],
     current: () => 'go',
+    supply: noSupply,
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -267,6 +280,7 @@ describe('resolveModel — reasoning metadata', () => {
   const adapterWith = (channels: ResolvedChannel[], current = 'go'): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
     channels: () => channels,
     current: () => current,
+    supply: noSupply,
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -315,6 +329,7 @@ describe('resolveModel — input modalities', () => {
   const adapterWith = (channels: ResolvedChannel[], current: string | undefined = 'go'): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
     channels: () => channels,
     current: () => current,
+    supply: noSupply,
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -414,6 +429,7 @@ describe('providerRetryPolicy — the retry budget the harness captures at regis
   const adapter = (): AnyDeepSeekAdapter => new AnyDeepSeekAdapter({
     channels: () => [channel()],
     current: () => 'go',
+    supply: noSupply,
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -473,6 +489,7 @@ describe('AdapterDeps contract', () => {
     const deps: AdapterDeps = {
       channels: () => [channel()],
       current: () => 'go',
+      supply: noSupply,
       resolveKey: async () => 'sk-test',
       record: async (entry: LedgerEntry) => { void entry },
       now: () => new Date(),

@@ -276,6 +276,121 @@
 }
 
 /*
+ * ── the supply group row (owner 2026-11-12) ─────────────────────────────────
+ *
+ * 🔴 The group is a MEMBER OF THE CHANNEL RADIO GROUP that happens to be a container, and the
+ * styling has to say both things at once:
+ *
+ *   · it must read as a CHOICE (the same radio, the same current-row marks) — owner's requirement
+ *     was 「给用户供应组是一种选择的感觉」, and the browser's radio semantics then guarantee the
+ *     thing he actually asked for: selecting the group unselects every channel below it;
+ *   · it must also read as a CONTAINER, because its members are edited and ordered here.
+ *
+ * Hence: same border/background language as `.ad-row`, but stacked (the member editor sits under
+ * the title line) and with a muted "explainer" line so an unused feature still explains itself.
+ */
+.ad-groupRow {
+  /* A container, not a one-line row: the picker stays on top, the editor stacks beneath it. */
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+/* The member editor spans the full width under the picker, so member rows never wrap awkwardly. */
+.ad-groupEditor {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--ad-line);
+}
+
+.ad-groupCount {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* The live cursor and the last switch are state, not decoration — they get the full-opacity
+   treatment the balance row reserves for facts the reader cannot derive. */
+.ad-groupLive,
+.ad-groupSwitch {
+  opacity: 1;
+  font-size: 11px;
+}
+
+.ad-groupSwitch {
+  color: #b7791f;
+}
+
+.ad-groupDangling {
+  color: #c53030;
+  opacity: 1;
+  font-size: 11px;
+}
+
+.ad-groupMembers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/*
+ * One member line: rank · name · ↑ ↓ 移出.
+ *
+ * `min-width: 0` + `flex: 1` on the name is the same lesson as `.ad-rowMain`: without it a long
+ * label refuses to shrink and pushes the buttons out of the panel (decision 82).
+ */
+.ad-groupMember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--ad-line);
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  font-size: 12px;
+}
+
+/* The member currently serving gets the same green left bar as the live channel row, so "which
+   one is talking to the relay" is one colour in one place. */
+.ad-groupMemberLive {
+  border-left-color: var(--ad-active);
+}
+
+.ad-groupRank {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.ad-groupName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ad-groupAdd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* The select shares the panel's input look; it must be allowed to shrink on a narrow screen. */
+.ad-groupAdd .ad-input {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+/*
  * Buttons: sized to be hit, not guessed at.
  *
  * The previous 4px/10px padding made a 22px-tall target, which is below the comfortable

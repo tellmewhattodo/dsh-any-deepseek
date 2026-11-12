@@ -27,9 +27,12 @@
  *
  * ## Why `fallback` exists but nothing reads it
  *
- * v1 selects one channel and does not fail over (owner decision). Declaring the field now means
- * enabling failover later is a behaviour change, not a configuration migration — and an unread
- * field is honest about that, whereas a hidden field would be a surprise later.
+ * v1 selected one channel and did not fail over (owner decision 2026-10-19). Failover arrived on
+ * 2026-11-12 as the **supply group** (`supplyGroup.members`) at the owner's request, and it is
+ * deliberately NOT built on `fallback`: the group is one ordered list the user edits, whereas
+ * `fallback` was an unordered per-channel hint that nothing ever populated. `fallback` stays
+ * declared-and-unread as the honest record of a shape we decided not to use — deleting it would
+ * make an old configuration containing it fail schema validation.
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -37,6 +40,24 @@ import type { Volatile } from '@deepseek-ai/cordis'
 
 /** Nameable schema type; see the TS2742 note in the file header. */
 type SchemaOf<S, T = S> = Schemastery<S, T>
+
+/**
+ * The sentinel `current` value that means "the supply group serves requests".
+ *
+ * 🔴 **Why a sentinel value instead of an `enabled` flag** — this is the load-bearing decision of
+ * the whole feature. "Which supplier is live" must be answerable from ONE field. A separate
+ * `supplyGroup.enabled` would let the document say two contradictory things:
+ * `enabled: true` with `current: 'opencode-go'` (which one wins?) and
+ * `enabled: false` with nothing selected (did the user turn the group off, or never pick a channel?).
+ * The panel would then need rules to reconcile the pair, and those rules would be the new bug
+ * surface. The old per-channel `enabled` flag was retired for exactly this reason (`channels.ts`).
+ *
+ * The value is deliberately not a valid channel id: `__group__` fails `^[a-z0-9][a-z0-9_-]*$`
+ * (leading underscore, and the panel's id validator rejects it), so it can never collide with a
+ * real channel — a collision would make "the group is on" indistinguishable from "a channel named
+ * `__group__` is on".
+ */
+export const SUPPLY_GROUP_ID = '__group__'
 
 /** One channel entry as a user writes it (schema INPUT). */
 export interface ChannelConfigInput {
@@ -128,6 +149,18 @@ export interface UsageConfigValue {
   path?: string
 }
 
+/**
+ * The supply group: an ordered member list.
+ *
+ * ⚠️ **The INPUT side must use a mutable `string[]`.** schemastery derives the input type from
+ * `z.array(z.string())` as `string[]`, so declaring `readonly string[]` here makes the schema
+ * unassignable to its own annotation (measured: TS2322 on `PluginConfigSchema`). The OUTPUT side
+ * is the one that is readonly, because that is what the schema actually produces.
+ */
+export interface SupplyGroupConfig {
+  members?: string[]
+}
+
 /** Ledger settings schema. */
 export const UsageConfigSchema: SchemaOf<UsageConfigValue> = z.object({
   enabled: z.boolean().default(true).description('是否记账'),
@@ -142,6 +175,7 @@ export const UsageConfigSchema: SchemaOf<UsageConfigValue> = z.object({
 export interface PluginConfigInput {
   channels?: Record<string, ChannelConfigInput>
   current?: string
+  supplyGroup?: SupplyGroupConfig
   usage?: UsageConfigValue
   fallback?: string[]
 }
@@ -158,6 +192,7 @@ export interface PluginConfigInput {
 export interface PluginConfigValue {
   channels: Volatile<Record<string, ChannelConfigValue>>
   current: Volatile<string>
+  supplyGroup: Volatile<{ readonly members: readonly string[] }>
   usage: UsageConfigValue
   fallback: string[]
 }
@@ -186,7 +221,31 @@ export interface PluginConfigValue {
  */
 export const PluginConfigSchema: SchemaOf<PluginConfigInput, PluginConfigValue> = z.object({
   channels: z.dict(ChannelConfigSchema).default({}).volatile().description('渠道表：每行一个中转渠道'),
-  current: z.string().default('').volatile().description('当前使用的渠道 id'),
+  /**
+   * What serves requests: a channel id, or {@link SUPPLY_GROUP_ID}.
+   *
+   * 🔴 **The supply group is a VALUE of this field, not a second flag beside it.** See
+   * {@link SUPPLY_GROUP_ID} for why that matters.
+   */
+  current: z.string().default('').volatile().description('当前使用：渠道 id，或供应组（__group__）'),
+  /**
+   * The one supply group: an ORDERED list of channel ids.
+   *
+   * 🔴 **There is no `enabled` field, and that is the design.** "Is the group on?" is answered by
+   * `current === SUPPLY_GROUP_ID` — one fact, one place. Adding `enabled` would create two axes
+   * that can contradict each other (enabled but not selected = a switch that does nothing;
+   * selected but disabled = an incoherent state), which is exactly the defect that retired the
+   * old per-channel `enabled` flag (see `channels.ts`).
+   *
+   * 🔴 **"Only one group" is a shape guarantee, not a validation.** A single array cannot express
+   * a second group. Supporting several later would require an explicit schema change rather than
+   * an accidental one.
+   *
+   * Order is the trial order: index 0 is tried first.
+   */
+  supplyGroup: z.object({
+    members: z.array(z.string()).default([]).description('供应组成员（按使用顺序）'),
+  }).default({ members: [] }).volatile().description('供应组：按顺序自动切换的渠道列表'),
   usage: UsageConfigSchema.default({ enabled: true }),
   fallback: z.array(z.string()).default([]).description('预留：故障转移顺序（v1 未实现）'),
 })

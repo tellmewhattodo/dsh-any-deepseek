@@ -375,47 +375,85 @@ describe('what the owner reported, pinned as assertions', () => {
     expect(page).not.toContain('setRenaming')
   })
 
-  it('🔴 the rename button cannot also select the channel', () => {
+  it('🔴 no action button may live inside a radio label — the supply group included', () => {
     /*
-     * 🔴 This protected a button that no longer exists (removed 2026-11-06 at the owner's request,
-     * together with its inline field). Kept as an assertion because the HAZARD outlives the button.
+     * 🔴 This protected a button that no longer exists (改名, removed 2026-11-06). Kept as an
+     * assertion because the HAZARD outlives the button: a control inside a radio's `<label>` has
+     * its clicks forwarded to the radio, so a button placed there silently makes its row current.
      *
-     * A control inside the radio's `<label>` has its clicks forwarded to the radio — clicking
-     * 改名 used to also make that channel current. The regression to guard against is therefore
-     * "did someone put an ACTION button back inside the label", so the check is generalised from
-     * the word 改名 to any button in that subtree.
+     * 🟢 **2026-11-12 made this check MORE important, not less.** The supply group's row is now the
+     * first `<label className="ad-rowPick">` in the page, and its member editor (§↑ ↓ 移出) is a
+     * dense cluster of buttons. Putting that editor inside the label would mean every click on
+     * 「↑」 also re-selects the group — a side effect on an unrelated action, exactly the defect
+     * this test exists for. So the check now walks EVERY `ad-rowPick` label rather than the first.
      *
-     * ⚠️ **What survives inside the label, and why it is not a counter-example**: 更换密钥's
-     * inline form (the password input + 保存密钥 button) lives there, inside
-     * `{keying === row.id && …}`. That button acts on the key, not on the selection, and its parent
-     * `<input>` carries no `onClick={…preventDefault()}` — only CONTROLS INSIDE a label get
-     * forwarded, so typing and clicking there do not select the row. Excluding exactly that
-     * subtree is what keeps this judgement about ACTIONS rather than about markup that happens to
-     * look like one; the first version of this rewrite asserted "no `<button>` at all" and went
-     * red on that form, which is a true negative, not a violation.
+     * ⚠️ **What is allowed inside a label, and why**: 更换密钥's inline form (password input +
+     * 保存密钥 button) lives in the channel label inside `{keying === row.id && …}`. That button
+     * acts on the key, not the selection, and typing in it does not fire the radio. Excluding
+     * exactly that subtree keeps this judgement about ACTIONS rather than about markup that
+     * happens to look like one.
      */
     const page = pageSource()
-    const labelStart = page.indexOf('className="ad-rowPick"')
-    const labelEnd = page.indexOf('</label>', labelStart)
-    const insideLabel = page.slice(labelStart, labelEnd)
+    const labels: string[] = []
+    let cursor = 0
+    for (;;) {
+      const start = page.indexOf('className="ad-rowPick"', cursor)
+      if (start < 0) break
+      const end = page.indexOf('</label>', start)
+      if (end < 0) break
+      labels.push(page.slice(start, end))
+      cursor = end + 1
+    }
+    // The group row added one label; a run that finds none would make every assertion below vacuous.
+    expect(labels.length).toBeGreaterThanOrEqual(2)
+
+    for (const [index, raw] of labels.entries()) {
+      /*
+       * 🔴 Strip comments before matching. A substring test cannot tell prose from code, and notes
+       * in this very subtree mention buttons — the first version of this assertion fired on its
+       * own documentation.
+       */
+      const withoutComments = raw.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+      // Strip ONLY the known-safe subtree, then assert it was actually there (otherwise the strip
+      // regex silently matched nothing and the check below stops meaning anything).
+      const withoutKeyForm = withoutComments
+        .replace(/\{keying === row\.id && \([\s\S]*?\n {20}\)\}/, '')
+        .replace(/\{keySaving \? '保存中…' : '保存密钥'\}/, '')
+      if (withoutComments.includes('{keying === row.id && (')) {
+        expect(withoutKeyForm, `label #${index}`).not.toContain('保存密钥')
+      }
+      expect(withoutKeyForm, `label #${index} must not carry an action button`).not.toContain('<button')
+      // Every slice must still BE a radio's label — otherwise the checks above are vacuous.
+      expect(withoutComments, `label #${index}`).toContain('name="ad-current-channel"')
+    }
+  })
+
+  it('🔴 the supply group is ONE radio option, not a switch beside them', () => {
     /*
-     * 🔴 Strip comments before matching. A substring test cannot tell prose from code, and a note
-     * inside this very subtree mentions buttons — the first version of this assertion fired on its
-     * own documentation.
+     * Owner requirement 2026-11-12: 「当开启供应组的时候，相当于选中了供应组作为当前使用，则下方就没有选中
+     * 模型了…给用户供应组是一种选择的感觉」.
      *
-     * Then strip ONLY the two known-safe subtrees, by asserting their absence afterwards. A single
-     * `.*?` regex was tried first and did not reach the closing `)}` — the slice kept the key form
-     * and the check reported a true negative as a violation.
+     * The mechanism that delivers that feeling is structural, so it is asserted structurally:
+     *  · the group's control is `type="radio"` in the SAME `name` group as the channels, so the
+     *    browser enforces "exactly one" and unselects every channel when the group is picked;
+     *  · selecting it writes the SAME field (`current`) the channel radios write, with the group
+     *    sentinel — there is no second flag to fall out of step.
+     *
+     * A checkbox/switch would satisfy the *words* "可开启的" while breaking the *feeling*: two
+     * independent axes could then disagree, which is the defect that retired per-channel `enabled`.
      */
-    const withoutComments = insideLabel.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
-    const withoutKeyForm = withoutComments
-      .replace(/\{keying === row\.id && \([\s\S]*?\n {20}\)\}/, '')
-      .replace(/\{keySaving \? '保存中…' : '保存密钥'\}/, '')
-    expect(withoutComments).toContain('{keying === row.id && (')
-    expect(withoutKeyForm).not.toContain('保存密钥')
-    expect(withoutKeyForm).not.toContain('<button')
-    // And the label must still BE the radio's label — otherwise the check above is vacuous.
-    expect(withoutComments).toContain('name="ad-current-channel"')
+    const page = pageSource()
+    const groupRow = page.slice(page.indexOf('ad-groupRow'), page.indexOf('ad-groupEditor'))
+    expect(groupRow).toContain('type="radio"')
+    expect(groupRow).toContain('name="ad-current-channel"')
+    expect(groupRow).toContain('onChange={() => selectGroup()}')
+    // ⛔ Not a checkbox, not a `role="switch"`.
+    expect(groupRow).not.toContain('type="checkbox"')
+    expect(page).not.toContain('role="switch"')
+    // The selection is written through the SAME field the channels use.
+    expect(page).toContain("setField(['current'], SUPPLY_GROUP_ID)")
+    // And the sentinel is not duplicated as a literal anywhere in the component.
+    expect(page).not.toContain("'__group__'")
   })
 })
 

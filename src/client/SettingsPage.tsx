@@ -28,9 +28,17 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { BalanceResponse, BalanceRow, ChannelRow, ProbeResult, StatsResponse } from './panel-api.js'
+import type { BalanceResponse, BalanceRow, ChannelRow, ProbeResult, StatsResponse, SupplyState } from './panel-api.js'
 import type { SettingsWire } from './index.js'
-import { formatBalance, formatDuration, formatMeanContext, formatSpeed, formatTokens } from './panel-api.js'
+import {
+  formatBalance,
+  formatDuration,
+  formatMeanContext,
+  formatSpeed,
+  formatTokens,
+  resetSupplyGroup as postSupplyReset,
+  SUPPLY_GROUP_ID,
+} from './panel-api.js'
 import './SettingsPage.css'
 
 /** What the plugin's `apply` hands this component. */
@@ -40,6 +48,8 @@ export interface SettingsPageInjected {
     channels: ChannelRow[]
     presets: Array<{ id: string; displayName: string }>
     model: { id: string; name: string }
+    /** The supply group's live state; absent on a build that predates the feature. */
+    supply?: SupplyState
   }>
   loadStats: (group: 'channel' | 'day', from?: string, to?: string) => Promise<StatsResponse>
   probe: (id: string) => Promise<ProbeResult>
@@ -170,6 +180,20 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [probing, setProbing] = useState<string | null>(null)
   const [verdict, setVerdict] = useState<Record<string, ProbeResult>>({})
   const [error, setError] = useState<string | null>(null)
+  /**
+   * The supply group's live state from `/channels` (members, cursor position, last switch).
+   *
+   * 🔴 Kept SEPARATE from `rows` and from the settings document on purpose. `rows` is "what
+   * channels exist"; `supplyGroup.members` in the settings document is "what the user configured";
+   * this is "what the router is actually doing". The panel needs all three to explain a fallback
+   * ("member 1 ran out of quota, so requests now go to member 2") — merge any two and the third
+   * question becomes unanswerable.
+   */
+  const [supply, setSupply] = useState<SupplyState | undefined>(undefined)
+  /** Whether the balance-less "reset to first member" request is in flight. */
+  const [supplyResetting, setSupplyResetting] = useState(false)
+  /** Which channel id the group editor is offering to append (empty = picker closed). */
+  const [addingMember, setAddingMember] = useState('')
 
   /** The "add a channel" form. Collapsed until asked for — an empty panel is not a form. */
   const [adding, setAdding] = useState(false)
@@ -211,6 +235,7 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     setRows(loaded.channels)
     setPresets(loaded.presets)
     setModel(loaded.model)
+    setSupply(loaded.supply)
     setStats(statsNow)
   }, [loadChannels, loadStats, group])
 
@@ -240,9 +265,74 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   }, [refresh])
 
   const current = settings.value?.current ?? ''
+  /** Whether the supply group is the selected supplier — ONE fact, read from ONE field. */
+  const groupSelected = current === SUPPLY_GROUP_ID
+  /** The configured member list, as this panel last read it from the settings document. */
+  const members: string[] = ((): string[] => {
+    const wire = settings.value as { supplyGroup?: { members?: unknown } } | undefined
+    const raw = wire?.supplyGroup?.members
+    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []
+  })()
 
   const select = (id: string): void => {
     write(() => setField(['current'], id))
+  }
+
+  /**
+   * Write the whole member list.
+   *
+   * One write per edit, and the list is replaced WHOLE rather than patched index by index:
+   * `members` is an ordered array, so a per-index write could interleave with a concurrent read
+   * (the same revision-conflict shape that produced decision 85) and leave the order scrambled.
+   * @param next - the complete new order.
+   */
+  const writeMembers = (next: readonly string[]): void => {
+    write(() => setField(['supplyGroup', 'members'], [...next]), '保存供应组失败')
+  }
+
+  /** Move one member one position earlier or later. */
+  const moveMember = (index: number, delta: -1 | 1): void => {
+    const target = index + delta
+    if (target < 0 || target >= members.length) return
+    const next = [...members]
+    const [item] = next.splice(index, 1)
+    next.splice(target, 0, item!)
+    writeMembers(next)
+  }
+
+  /**
+   * Switch the supplier: the group, or one channel.
+   *
+   * 🔴 Both arms write the SAME field (`current`) — that is the whole point of the sentinel design.
+   * Writing the group means "the group serves", and every channel row stops being the selection in
+   * exactly the way it already does when a different channel is picked.
+   */
+  const selectGroup = (): void => {
+    write(() => setField(['current'], SUPPLY_GROUP_ID), '启用供应组失败')
+  }
+
+  /** Put the supplier back to a single channel, leaving the member list intact for next time. */
+  const selectSingle = (id: string): void => {
+    select(id)
+  }
+
+  /** Clear the sticky cursor so the group starts from its first member again. */
+  const resetGroupCursor = async (): Promise<void> => {
+    setSupplyResetting(true)
+    try {
+      const accepted = await postSupplyReset()
+      if (!accepted) {
+        setError('重置供应组失败：宿主拒绝了这个请求')
+        return
+      }
+      setError(null)
+      // The reset is host state, so `/channels` is the only place that can confirm it.
+      await refresh()
+    } catch (cause: unknown) {
+      setError(`重置供应组失败：${cause instanceof Error ? cause.message : String(cause)}`)
+    } finally {
+      setSupplyResetting(false)
+    }
   }
 
   /**
@@ -469,7 +559,195 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             还没有渠道。点下面的「添加渠道」，选一个规格、粘一个 key 就能用。
           </p>
         )}
-        <ul className="ad-rows" role="radiogroup" aria-label="选择当前渠道">
+        <ul className="ad-rows" role="radiogroup" aria-label="选择当前供应商">
+          {/*
+            🔴 THE SUPPLY GROUP IS A MEMBER OF THIS RADIO GROUP — the first one.
+
+            Owner requirement 2026-11-12: 「当开启供应组的时候，相当于选中了供应组作为当前使用，则下方就没有
+            选中模型了…给用户供应组是一种选择的感觉」.
+
+            Why it lives here rather than in its own separate card above: "the group" and "channel X"
+            are ALTERNATIVES for the same slot. Rendering them in two different visual languages —
+            a switch above, radios below — would make them look like two independent settings, and
+            the reader would then have to work out which one wins. Inside this list, the browser's
+            own radio semantics enforce "exactly one" for free, and selecting the group visibly
+            UNSELECTS every channel below it, which is the feeling the owner asked for.
+
+            The row is taller than a channel row because it is a container as well as a choice: its
+            members, their order, and the live cursor belong where the decision is made.
+          */}
+          <li
+            className={`ad-row ad-groupRow${groupSelected ? ' ad-row-current' : ''}`}
+            aria-current={groupSelected ? 'true' : undefined}
+            data-current={groupSelected ? 'true' : 'false'}
+          >
+            <label className="ad-rowPick">
+              <input
+                type="radio"
+                name="ad-current-channel"
+                checked={groupSelected}
+                onChange={() => selectGroup()}
+              />
+              <span className="ad-rowMain">
+                <span className="ad-rowTitleLine">
+                  <span className="ad-rowTitle">供应组</span>
+                  {groupSelected && <span className="ad-badge">当前</span>}
+                  <span className="ad-groupCount">{members.length > 0 ? `${members.length} 个渠道` : '未配置'}</span>
+                </span>
+                {/*
+                  The one-line explanation, always present. A user who has never used the group
+                  needs to know what selecting it DOES before selecting it — and "按顺序自动换" is
+                  the entire value proposition in five characters.
+                */}
+                <span className="ad-rowDetail">
+                  按顺序使用，遇到余额不足或密钥失效时自动换下一个，供应不中断
+                </span>
+                {/*
+                  🔴 The live position, shown only when the group is actually serving.
+
+                  This is the answer to "why is my request going to the third relay?" — and it is
+                  only knowable from the ROUTER (the cursor is host memory, never in the settings
+                  document), which is why `supply` comes from `/channels` and not from the config.
+                */}
+                {groupSelected && supply !== undefined && supply.serving !== undefined && (
+                  <span className="ad-rowDetail ad-groupLive">
+                    正在使用：
+                    <strong>{rows.find((row) => row.id === supply.serving)?.label ?? supply.serving}</strong>
+                    （第 {supply.position + 1} 位）
+                  </span>
+                )}
+                {groupSelected && supply?.lastSwitch !== undefined && (
+                  <span className="ad-rowDetail ad-groupSwitch">
+                    最近切换：
+                    {rows.find((row) => row.id === supply.lastSwitch!.from)?.label ?? supply.lastSwitch!.from}
+                    {' → '}
+                    {rows.find((row) => row.id === supply.lastSwitch!.to)?.label ?? supply.lastSwitch!.to}
+                    （{supply.lastSwitch!.code}）
+                  </span>
+                )}
+                {/*
+                  Dangling members are LISTED, not silently dropped. The router skips them to stay
+                  online, but a member naming a channel that no longer exists is a configuration
+                  the user must fix — and a group that quietly shrinks is how "three relays" becomes
+                  "one relay" without anyone noticing (decision 26/31 in spirit).
+                */}
+                {supply !== undefined && supply.dangling.length > 0 && (
+                  <span className="ad-rowDetail ad-groupDangling">
+                    找不到这些渠道：{supply.dangling.join('、')}（已跳过）
+                  </span>
+                )}
+              </span>
+            </label>
+            {/*
+              The member editor.
+
+              ⛔ Rendered OUTSIDE the `<label>` (see the `ad-rowPick` note above): a button inside a
+              radio's label has its clicks forwarded to the radio, so "move up" would also select the
+              group. The tests pin this structurally.
+            */}
+            <div className="ad-groupEditor">
+              {members.length === 0 && (
+                <p className="ad-empty">还没放渠道进来。选一个渠道加进来，就会按下面的顺序依次使用。</p>
+              )}
+              {members.length > 0 && (
+                <ol className="ad-groupMembers">
+                  {members.map((id, index) => {
+                    const row = rows.find((candidate) => candidate.id === id)
+                    const live = groupSelected && supply?.serving === id
+                    return (
+                      <li key={id} className={`ad-groupMember${live ? ' ad-groupMemberLive' : ''}`}>
+                        <span className="ad-groupRank">{index + 1}</span>
+                        <span className="ad-groupName">{row?.label ?? `${id}（找不到）`}</span>
+                        {/*
+                          The ↑/↓ buttons are disabled at the ends rather than hidden: a control
+                          that disappears makes the list reflow under the pointer, so the next click
+                          lands on a different row.
+                        */}
+                        <button
+                          type="button"
+                          className="ad-btn ad-btn-quiet"
+                          disabled={index === 0}
+                          title="往上移（更优先）"
+                          onClick={() => moveMember(index, -1)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="ad-btn ad-btn-quiet"
+                          disabled={index === members.length - 1}
+                          title="往下移（更靠后）"
+                          onClick={() => moveMember(index, 1)}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="ad-btn ad-btn-danger"
+                          title="移出供应组（不删除渠道本身）"
+                          onClick={() => writeMembers(members.filter((candidate) => candidate !== id))}
+                        >
+                          移出
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+              {/*
+                Adding a member: a picker of channels that are NOT already in the group, plus a
+                disabled hint when there are none. Showing only addable channels keeps "already in
+                the group" from being an error the user discovers by trying.
+              */}
+              {(() => {
+                const addable = rows.filter((row) => !members.includes(row.id))
+                if (addable.length === 0) {
+                  return <p className="ad-hint">所有渠道都已在供应组里。</p>
+                }
+                return (
+                  <div className="ad-groupAdd">
+                    <select
+                      className="ad-input"
+                      value={addingMember}
+                      onChange={(event) => setAddingMember(event.target.value)}
+                    >
+                      <option value="">选一个渠道加进来…</option>
+                      {addable.map((row) => (
+                        <option key={row.id} value={row.id}>{row.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="ad-btn"
+                      disabled={addingMember === ''}
+                      onClick={() => {
+                        writeMembers([...members, addingMember])
+                        setAddingMember('')
+                      }}
+                    >
+                      加进来
+                    </button>
+                  </div>
+                )
+              })()}
+              {/*
+                The reset button explains WHY it exists, because without that sentence it looks like
+                a mystery: the cursor is sticky, so after a member runs out the group stays on the
+                later member. Topping up the first relay does not bring traffic back on its own.
+              */}
+              {groupSelected && members.length > 0 && (
+                <button
+                  type="button"
+                  className="ad-link"
+                  disabled={supplyResetting}
+                  title="把下一个请求重新从第 1 位开始（充值后想马上用回第一个时有意义）"
+                  onClick={() => { void resetGroupCursor() }}
+                >
+                  {supplyResetting ? '重置中…' : '从第 1 位重新开始'}
+                </button>
+              )}
+            </div>
+          </li>
           {rows.map((row) => {
             const isCurrent = current === row.id
             const probeResult = verdict[row.id]

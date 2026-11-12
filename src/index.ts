@@ -23,6 +23,7 @@ import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } fr
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { allChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME, type HarnessImageRef } from './adapter.js'
+import { SupplyCursor } from './failover.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
 import { registerStatsRoutes, type WebServerLike } from './http.js'
 
@@ -165,6 +166,32 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
   }
 
   /**
+   * The one supply cursor for this plugin instance.
+   *
+   * 🔴 Created ONCE, outside the request path, because its whole purpose is to remember a position
+   * across requests. Building it per call would make it a no-op that looks like a feature.
+   */
+  const supplyCursor = new SupplyCursor()
+
+  /**
+   * The supply group and its cursor, read fresh each request.
+   *
+   * `members` is read from the live config (not captured at apply time) for the same reason
+   * `channels` is: the panel edits it while the plugin runs. `SupplyCursor` resets itself whenever
+   * the member list changes, so a stale index can never point at a different channel.
+   */
+  const supply = () => {
+    const live = (ctx as unknown as { fiber?: { config?: PluginConfigValue } }).fiber?.config ?? config
+    // `supplyGroup` is volatile too, so it arrives wrapped; `absent` (a config written before this
+    // feature existed) is a real state and means "no members".
+    const group = unwrap(live.supplyGroup)
+    const members = Array.isArray(group?.members)
+      ? group!.members.filter((id): id is string => typeof id === 'string')
+      : []
+    return { members, cursor: supplyCursor }
+  }
+
+  /**
    * Read one image's request bytes from the harness attachment store.
    *
    * 🔴 This is the host seam, not something this plugin invents: a harness `ImageBlock` carries
@@ -216,6 +243,7 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
   const deps = {
     channels,
     current,
+    supply,
     resolveKey,
     readImage,
     record: makeRecorder(ctx, config),
@@ -261,6 +289,29 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
       advertised: () => ({ id: ADVERTISED_MODEL_ID, name: ADVERTISED_MODEL_NAME }),
       // The live selection, so the sidebar can name the active provider (owner 2026-11-03).
       current,
+      // The supply group's runtime state (owner 2026-11-12). Split into two accessors because the
+      // panel needs both the config-derived member list AND the router-derived cursor position,
+      // and `supply()` already holds both — `dangling` is computed here because only this layer
+      // knows which ids actually resolved.
+      supply: () => {
+        const { members, cursor } = supply()
+        const live = channels()
+        const known = new Set(live.map((channel) => channel.id))
+        const resolvable = members.filter((id) => known.has(id))
+        // `startIndex` is read-only in effect: it resets the cursor when the list changed, which is
+        // exactly the invalidation we want before reporting a position.
+        const position = resolvable.length === 0 ? 0 : cursor.startIndex(members)
+        const serving = resolvable.length === 0 ? undefined : resolvable[position]
+        const last = cursor.last
+        return {
+          members,
+          dangling: members.filter((id) => !known.has(id)),
+          serving,
+          position,
+          ...last === undefined ? {} : { lastSwitch: last },
+        }
+      },
+      resetSupply: () => supplyCursor.reset(),
       describeKey: async (ref: string) => {
         const seam = credentials()
         if (seam?.describe === undefined) return { configured: process.env[ref] !== undefined, source: 'env' }

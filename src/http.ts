@@ -65,6 +65,31 @@ export interface RouteDeps {
    * whole channel list.
    */
   current?: () => string | undefined
+  /**
+   * The supply group's live state, for the panel's group block and the sidebar readout.
+   *
+   * 🔴 Read from the RUNTIME, not from the settings document. `members` exists in both, but the
+   * *cursor position* and *last switch* exist only here — the settings document records what the
+   * user configured, while this records what the router has actually done since. The panel needs
+   * the second to explain "you are on member 2 because member 1 ran out of quota".
+   *
+   * ⚠️ Optional for the same reason {@link current} is: a caller that predates the group must keep
+   * working, and its absence means "this build has no supply group", not an error.
+   */
+  supply?: () => {
+    /** The configured ordered member ids, exactly as stored (including ones that do not resolve). */
+    members: readonly string[]
+    /** Ids in `members` that no configured channel matches; the panel lists these for removal. */
+    dangling: readonly string[]
+    /** The member the next request will start from, or undefined when the list is empty. */
+    serving: string | undefined
+    /** Zero-based position of {@link serving} within the RESOLVABLE member list. */
+    position: number
+    /** The most recent switch, if any since the last reset. */
+    lastSwitch?: { from: string; to: string; code: string; atMs: number }
+  }
+  /** Return the supply group to its first member (owner-facing 「重置到第一个」). */
+  resetSupply?: () => void
   /** Describe a credential reference (never its value). */
   describeKey: (ref: string) => Promise<{ configured: boolean; source?: string }>
   /**
@@ -558,7 +583,34 @@ export function registerStatsRoutes(ctx: unknown, webServer: WebServerLike, deps
           // provider without a second request. Absent (not empty-string) when nothing is selected:
           // "no channel chosen" and "a channel whose id is empty" must not look the same.
           ...active === undefined ? {} : { current: active },
+          // The supply group, so the panel can render it as a SELECTABLE SUPPLIER rather than as a
+          // settings subsection. Everything the panel needs to say "the group is what is serving,
+          // and here is where it currently is" travels with the same response.
+          ...deps.supply === undefined ? {} : { supply: deps.supply() },
         })
+      },
+    },
+    {
+      /**
+       * Return the supply group to its first member.
+       *
+       * 🔴 POST, not GET, and deliberately so: this mutates router state that outlives the request
+       * (the sticky cursor). A GET would be cacheable/prefetchable, and a prefetched "reset" would
+       * silently undo a fallback the user was relying on.
+       *
+       * Why the button exists at all: the cursor is sticky, so after a member runs out of quota
+       * the group stays on the later member until something invalidates it. Topping up a relay
+       * should not require a host restart to get back onto it.
+       */
+      kind: 'exact',
+      path: `${ROUTE_PREFIX}/supply/reset`,
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          json(res, 405, { error: 'POST required' })
+          return
+        }
+        deps.resetSupply?.()
+        json(res, 200, { ok: true })
       },
     },
     {

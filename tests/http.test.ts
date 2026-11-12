@@ -130,13 +130,15 @@ function mount(deps: Partial<RouteDeps> = {}): {
 }
 
 describe('route surface', () => {
-  it('registers channels, stats, probe and balance under one prefix', () => {
+  it('registers channels, stats, probe, balance and the supply reset under one prefix', () => {
     const { routes } = mount()
     expect(routes.sort()).toEqual([
       `${ROUTE_PREFIX}/balance`,
       `${ROUTE_PREFIX}/channels`,
       `${ROUTE_PREFIX}/probe`,
       `${ROUTE_PREFIX}/stats`,
+      // POST-only: mutates router state that outlives the request (the sticky group cursor).
+      `${ROUTE_PREFIX}/supply/reset`,
     ].sort())
   })
 })
