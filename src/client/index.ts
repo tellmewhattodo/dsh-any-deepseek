@@ -199,8 +199,7 @@ export function apply(ctx: ClientContext): void {
                 label: () => 'Any DeepSeek',
                 inject: (): SettingsPageInjected => ({
                   hooks: { settings: form },
-                  loadChannels: (): Promise<{ channels: ChannelRow[]; presets: Array<{ id: string; displayName: string }>; model: { id: string; name: string } }> =>
-                    fetchChannels(),
+                  loadChannels: (): Promise<ChannelsResponse> => fetchChannels(),
                   loadStats: (group: 'channel' | 'day', from?: string, to?: string): Promise<StatsResponse> =>
                     fetchStats(group, from, to),
                   probe: (id: string) => probeChannel(id),
