@@ -140,3 +140,37 @@ describe('currentProviderLabel — the supply group', () => {
     )).toBe('供应组')
   })
 })
+
+describe('currentProviderLabel — the out-of-credit safety net (owner 2026-11-19)', () => {
+  const supplyWith = (over: Partial<NonNullable<ChannelsResponse['supply']>>): NonNullable<ChannelsResponse['supply']> => ({
+    members: ['opencode-go', 'ollama'],
+    dangling: [],
+    position: 1,
+    exhausted: false,
+    ...over,
+  })
+
+  it('🔴 names the GROUP and says it is automatic when a chosen channel ran out of credit', () => {
+    // 🔴 The whole reason `viaFallback` exists. `current` is still `ollama` (the user's choice) but
+    // the request was served by a member. Printing 「Ollama Cloud-1」 would claim the user picked it
+    // and that its account paid — the 2026-11-18 wrong-name defect, one layer down.
+    // `（自动）` is load-bearing: without it this line is indistinguishable from the user having
+    // selected the group, and "why is it using the group?" would have no answer on screen.
+    const label = currentProviderLabel(response('opencode-go', CHANNELS, supplyWith({ serving: 'ollama', viaFallback: true })))
+    expect(label).toBe('供应组（自动）· Ollama Cloud-1')
+  })
+
+  it('🔴 the SAME data without the flag renders as a plain channel name', () => {
+    // The mirror image, so the flag is doing the work rather than something else in the fixture.
+    const label = currentProviderLabel(response('opencode-go', CHANNELS, supplyWith({ serving: 'ollama', viaFallback: false })))
+    expect(label).toBe('OpenCode Go-1')
+  })
+
+  it('⛔ does not claim "automatic" when the group itself is the selection', () => {
+    // The group arm already says 供应组; adding （自动） there would be false — the user DID pick it.
+    const label = currentProviderLabel(
+      response('__group__', CHANNELS, supplyWith({ serving: 'ollama', viaFallback: true })),
+    )
+    expect(label).toBe('供应组 · Ollama Cloud-1')
+  })
+})

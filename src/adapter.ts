@@ -56,8 +56,8 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelApi, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
-import { selectChannel, type RouteFailure } from './route.js'
-import { SupplyStatus, canSwitchAttempt } from './failover.js'
+import { groupMembers, selectChannel, type RouteFailure } from './route.js'
+import { SupplyStatus, canFallBackToGroup, canSwitchAttempt } from './failover.js'
 import type { LedgerEntry } from './usage-ledger.js'
 
 /** The single provider route this plugin owns. */
@@ -974,10 +974,34 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     }
 
     const head = selection.channel
-    const candidates: readonly ResolvedChannel[] = [head, ...selection.alternates]
+    /** Mutable on purpose: the safety net appends the group's members mid-request. */
+    const candidates: ResolvedChannel[] = [head, ...selection.alternates]
     // Whether this request is walking the group at all. A plain channel selection has one candidate
     // and no order to record, so switches are display-only there (and there are none).
     const fromGroup = selection.source.kind === 'group'
+
+    /**
+     * The supply group as an ordered fallback list, prepared BEFORE the first attempt.
+     *
+     * 🔴 Owner request 2026-11-19: 「当使用非供应组渠道 用到无费用时 自动切换到供应组。目的是确保
+     * token 供应不中断」. The group already knows how to walk itself; what was missing is permission
+     * for a request that chose a SINGLE channel to continue inside it when that channel runs out of
+     * money.
+     *
+     * ⛔ Empty when the group is already serving: its own walk owns that decision, and two
+     * mechanisms acting on one failure would attempt the same member twice.
+     *
+     * ⚠️ The failed channel is excluded. It is `current`, so a user may well have put it in the
+     * group too; re-attempting it immediately would spend a guaranteed second refusal on the same
+     * dead account, which is not "供应不中断", it is a loop.
+     */
+    const groupFallback: readonly ResolvedChannel[] = fromGroup
+      ? []
+      : groupMembers(this.deps.channels(), supply.members).ordered
+        .filter((channel) => channel.id !== head.id)
+
+    /** Whether the safety net has already fired for this request (it may fire at most once). */
+    let fellBack = false
 
     /** Every attempt this request made, for the message on total failure. */
     const tried: Array<{ id: string; label: string; code: string }> = []
@@ -1115,8 +1139,15 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 
       // Success: the terminal chunk was already forwarded inside the loop. Record who served, for
       // the panel only — ⛔ nothing reads this back to choose the next starting member.
+      //
+      // 🔴 Recorded UNCONDITIONALLY (2026-11-19). `serving` means "the channel that served the last
+      // successful request", and that is a fact worth having for a plain selection too: after a
+      // safety-net fallback, `serving` is a group member while `current` is still the channel the
+      // user chose, and that DIFFERENCE is the only way the sidebar can say 「供应组 · <member>」
+      // instead of naming a channel that has no credit left — the exact wrong-name defect of
+      // 2026-11-18.
       if (failure === undefined) {
-        if (fromGroup) supply.status.noteServed(channel.id)
+        supply.status.noteServed(channel.id, this.deps.current() ?? '', fellBack)
         return
       }
 
@@ -1128,9 +1159,35 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       if (canSwitch) {
         // Display-only: 「刚才 A 因为 QUOTA 换到了 B」. The NEXT request still starts at member 1
         // (owner rule, see `route.ts`) — this line does not influence that.
-        if (fromGroup) {
+        //
+        // 🔴 `|| fellBack` matters (2026-11-19): once a fallback has put us INSIDE the group, the
+        // remaining member→member moves are group switches just as much as they would be had the
+        // group been selected. Guarding on `fromGroup` alone would leave 「最近切换」 frozen at the
+        // first hop and make a three-relay walk look like a single one.
+        if (fromGroup || fellBack) {
           supply.status.noteSwitch(channel.id, candidates[position + 1]!.id, code, this.deps.now().getTime())
         }
+        continue
+      }
+
+      // 🔴 The safety net (owner request 2026-11-19): the directly selected channel is out of credit
+      // ⇒ continue INSIDE the supply group instead of failing the request. Appended to `candidates`,
+      // so the ordinary walk serves the members in priority order and every existing guard
+      // (`emitted`, the switch set, one ledger line per attempt) keeps applying unchanged.
+      //
+      // ⚠️ Only once per request, and only for a plain-channel selection — both are checked in
+      // `canFallBackToGroup`, together with the narrower trigger set (QUOTA/ACCOUNT_QUOTA only).
+      if (!fellBack && canFallBackToGroup({
+        code,
+        emitted,
+        selectionIsChannel: !fromGroup,
+        groupCandidates: groupFallback.length,
+      })) {
+        fellBack = true
+        candidates.push(...groupFallback)
+        // The panel must be able to explain a request that left the chosen channel. Recorded as a
+        // switch from the chosen channel to the group's first member, with the real failure code.
+        supply.status.noteSwitch(channel.id, groupFallback[0]!.id, code, this.deps.now().getTime())
         continue
       }
 
@@ -1140,11 +1197,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       // 🔴 `exhausted` is only the "ran off the end" case. A mid-stream failure on member 1 of 4
       // leaves members 2..4 perfectly usable, and reporting 「全组均不可用」 there would be a false
       // alarm that also hides the healthy alternatives.
-      if (fromGroup) supply.status.noteFailure(channel.id, position + 1 >= candidates.length)
+      if (fromGroup || fellBack) supply.status.noteFailure(channel.id, position + 1 >= candidates.length)
 
       yield {
         type: 'finish',
-        reason: { kind: 'error', failure: { message: describeFailure(failure, tried, emitted), code } },
+        reason: { kind: 'error', failure: { message: describeFailure(failure, tried, emitted, !fromGroup), code } },
       }
       return
     }
@@ -1161,26 +1218,40 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
 /**
  * Turn a terminal failure into the message the user reads.
  *
- * 🔴 The attempt trail is appended only when the group actually walked (`tried.length > 1`). A
- * single-attempt failure gains nothing from "tried: X" — the user already knows which supplier was
- * live — and adding it unconditionally would bury the real error under routing noise.
+ * 🔴 The attempt trail is appended only when more than one supplier was tried. A single-attempt
+ * failure gains nothing from "tried: X" — the user already knows which supplier was live — and
+ * adding it unconditionally would bury the real error under routing noise.
+ *
+ * ⚠️ **Which sentence is used is not cosmetic** (2026-11-19). A request that started on a plain
+ * channel and fell back says "every supply-group member failed" only if the CHOSEN channel is also
+ * mentioned — otherwise the reader sees a trail beginning with a channel they picked and a claim
+ * about group members, and concludes the group was selected all along.
  * @param failure - the last attempt's error.
  * @param tried - every attempt, in order.
  * @param emitted - whether content had already reached the consumer.
+ * @param startedOnChannel - whether the request began on a directly selected channel (not the group).
  * @returns the message to send to the harness.
  */
 function describeFailure(
   failure: { message: string; code: string },
   tried: ReadonlyArray<{ label: string; code: string }>,
   emitted: boolean,
+  startedOnChannel: boolean,
 ): string {
   if (tried.length <= 1) return failure.message
   const trail = tried.map((attempt) => `${attempt.label}(${attempt.code})`).join(' → ')
   // The `emitted` case is worth spelling out: the user will otherwise reasonably ask why the
   // group did not simply move to the next supplier like it did last time.
-  return emitted
-    ? `${failure.message} — already streaming from ${tried[tried.length - 1]!.label}, so the group did not switch (tried: ${trail})`
-    : `${failure.message} — every supply-group member failed (tried: ${trail})`
+  if (emitted) {
+    return `${failure.message} — already streaming from ${tried[tried.length - 1]!.label}, so the group did not switch (tried: ${trail})`
+  }
+  // The fallback shape: the user's own channel failed first, then the whole group. Naming both is
+  // the only honest sentence — "every supply-group member failed" alone would omit the channel whose
+  // failure caused all of this.
+  if (startedOnChannel) {
+    return `${failure.message} — your selected channel and every supply-group member failed (tried: ${trail})`
+  }
+  return `${failure.message} — every supply-group member failed (tried: ${trail})`
 }
 
 /** Turn a routing failure into a terminal chunk. */

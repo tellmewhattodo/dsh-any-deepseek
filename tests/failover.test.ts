@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SupplyStatus, canSwitchAttempt, shouldFailover } from '../src/failover.js'
+import { SupplyStatus, canFallBackToGroup, canSwitchAttempt, shouldFailover } from '../src/failover.js'
 
 describe('shouldFailover — the switch set', () => {
   it('🔴 switches when the channel itself cannot serve', () => {
@@ -66,6 +66,52 @@ describe('canSwitchAttempt — the "may we even try another supplier" gate', () 
     for (const code of ['RATE_LIMIT', 'SERVER', 'TRANSPORT', 'CONTEXT_WINDOW_EXCEEDED', 'ABORTED']) {
       expect(canSwitchAttempt({ ...base, code }), code).toBe(false)
     }
+  })
+})
+
+describe('canFallBackToGroup — the out-of-credit safety net (2026-11-19)', () => {
+  // Owner request: 「当使用非供应组渠道 用到无费用时 自动切换到供应组。目的是确保 token 供应不中断」.
+  // These cases pin the FOUR conditions separately, because a single combined case would stay green
+  // when any one of them was dropped — and each one that gets dropped changes behaviour in a
+  // different, user-visible way.
+  const base = { code: 'QUOTA', emitted: false, selectionIsChannel: true, groupCandidates: 2 }
+
+  it('fires for the owner\'s case: chosen channel out of credit, group has members', () => {
+    expect(canFallBackToGroup(base)).toBe(true)
+    expect(canFallBackToGroup({ ...base, code: 'ACCOUNT_QUOTA' })).toBe(true)
+  })
+
+  it('🔴 REFUSES once anything has been streamed', () => {
+    // The same guard as `canSwitchAttempt`, and for the same reason: a chunk already yielded is in
+    // the session and on screen, so continuing elsewhere would splice two models into one message.
+    expect(canFallBackToGroup({ ...base, emitted: true })).toBe(false)
+  })
+
+  it('🔴 REFUSES when the group is already the selection', () => {
+    // The group's own walk owns that decision. Two mechanisms on one failure would attempt the same
+    // member twice.
+    expect(canFallBackToGroup({ ...base, selectionIsChannel: false })).toBe(false)
+  })
+
+  it('🔴 REFUSES when the group has nothing usable', () => {
+    // `groupCandidates` counts resolvable members EXCLUDING the failed channel. Zero means there is
+    // nowhere to go, so the failure must be reported as before — no invented supplier.
+    expect(canFallBackToGroup({ ...base, groupCandidates: 0 })).toBe(false)
+  })
+
+  it('🔴 REFUSES for anything that is not "out of credit"', () => {
+    // The trigger is 「无费用」, not "anything terminal". AUTH/MISSING_CREDENTIAL are also terminal
+    // but are CONFIGURATION errors: routing around them would hide a typo. Transient codes belong to
+    // the retry layer — switching on them throws away a warm prompt cache for a blip that fixes
+    // itself, and hides a flaky relay behind someone else's bill.
+    for (const code of [
+      'AUTH', 'INVALID_CREDENTIAL', 'MISSING_CREDENTIAL',
+      'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'STREAM_CLOSED',
+      'CONTEXT_WINDOW_EXCEEDED', 'ABORTED', 'SOMETHING_NEW',
+    ]) {
+      expect(canFallBackToGroup({ ...base, code }), code).toBe(false)
+    }
+    expect(canFallBackToGroup({ ...base, code: undefined })).toBe(false)
   })
 })
 
@@ -142,14 +188,53 @@ describe('SupplyStatus — the display-only readings', () => {
     // `selectFromGroup`. This test pins the SHAPE: no routing-shaped accessor exists. If a future
     // edit adds one, the panel's readings have quietly become a cursor again, and the priority order
     // stops being the priority order.
+    //
+    // ⚠️ The allowed set grew on 2026-11-19 (`servingUnder`, `servedByFallback`, `isMember`) — all
+    // three are READS that answer "is this reading still current / did it come from the fallback",
+    // none of them answers "where do I start". The judgement is not "the surface is frozen"; it is
+    // "no member of this surface may influence the starting index".
     const status = new SupplyStatus()
     status.bind(['a', 'b', 'c'])
-    status.noteServed('c')
+    status.noteServed('c', 'a')
     status.noteFailure('c', false)
     const surface = Object.getOwnPropertyNames(SupplyStatus.prototype).filter((name) => name !== 'constructor')
     expect(surface.sort()).toEqual(
-      ['bind', 'isExhausted', 'lastSwitch', 'lastTried', 'noteFailure', 'noteServed', 'noteSwitch', 'serving'].sort(),
+      [
+        'bind', 'isExhausted', 'isMember', 'lastSwitch', 'lastTried',
+        'noteFailure', 'noteServed', 'noteSwitch',
+        'servedByFallback', 'serving', 'servingUnder',
+      ].sort(),
     )
+  })
+
+  it('🔴 a reading from BEFORE a selection change is not reported as live', () => {
+    // The 2026-11-18 wrong-name defect, one layer down. `serving` alone cannot tell "this is who is
+    // serving now" from "this is who served before the user changed the selection", so the panel
+    // reads `servingUnder(current)` and a stale reading answers `undefined`.
+    const status = new SupplyStatus()
+    status.bind(['a', 'b'])
+    status.noteServed('b', 'a')
+    expect(status.servingUnder('a')).toBe('b')
+    expect(status.servingUnder('other')).toBeUndefined()
+    expect(status.servingUnder(undefined)).toBeUndefined()
+  })
+
+  it('🔴 the fallback flag travels with the reading, and dies with it', () => {
+    // `servedByFallback` says a chosen channel ran out of credit and a member took over. It must
+    // never outlive the reading it describes: a later failure, or a member-list change, clears it.
+    const status = new SupplyStatus()
+    status.bind(['a', 'b'])
+    status.noteServed('b', 'chosen', true)
+    expect(status.servedByFallback).toBe(true)
+    expect(status.isMember('b')).toBe(true)
+    expect(status.isMember('chosen')).toBe(false)
+
+    status.noteFailure('b', false)
+    expect(status.servedByFallback).toBe(false)
+
+    status.noteServed('b', 'chosen', true)
+    status.bind(['a', 'b', 'c'])
+    expect(status.servedByFallback).toBe(false)
   })
 
   it('an empty member list is inert rather than throwing', () => {

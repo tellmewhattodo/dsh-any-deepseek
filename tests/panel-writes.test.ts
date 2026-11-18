@@ -494,6 +494,23 @@ describe('what the owner reported, pinned as assertions', () => {
     expect(page).toContain('supply.position >= 0')
   })
 
+  it('🔴 the safety net has a line in the group row — and it is gated on NOT selecting the group', () => {
+    // Owner request 2026-11-19: a chosen channel that runs out of credit falls back into the group.
+    // Two things must be visible in one glance: the group is serving, and it is serving because
+    // something else stopped. The gate `!groupSelected` is load-bearing — when the user DID select
+    // the group, 「自动接管中」 would be a lie.
+    //
+    // ⛔ Its own row rather than a banner: the answer to "who is serving?" is already in the group
+    // row, and putting this anywhere else creates a second place that can disagree with it.
+    const page = pageSource()
+    expect(page).toContain('自动接管中')
+    expect(page).toContain('!groupSelected && supply?.viaFallback === true')
+    // It must name the MEMBER that took over, not just say "the group".
+    expect(page).toContain('supply.serving')
+    // And it must tell the reader how the situation ends, or it reads as a permanent state change.
+    expect(page).toContain('充值后会自动回到它')
+  })
+
   it('🔴 the group\'s description states the priority rule, not a rotation', () => {
     // The old sentence (「遇到余额不足…自动换下一个」) described what the sticky cursor did. Leaving it
     // would make the panel describe an algorithm that is no longer running — the same class of

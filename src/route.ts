@@ -115,6 +115,36 @@ export function selectChannel(
 }
 
 /**
+ * The supply group's members, resolved and ordered: the ONE definition of "who is in the group".
+ *
+ * 🔴 Extracted for the safety-net path (2026-11-19). Two callers now need it — the router, which
+ * needs a head plus alternates, and the adapter's fallback, which needs the ordered ids to append
+ * to a single-channel request that ran out of credit. If each derived the order itself they would
+ * eventually disagree about what "priority 1" means, and the disagreement would be invisible: both
+ * would look correct on their own.
+ *
+ * Dangling ids are dropped here and nowhere else, and the caller is told which ones — the panel
+ * lists them, because a group that quietly shrinks is how "three relays" becomes "one relay".
+ * @param channels - every resolved channel.
+ * @param members - the configured ordered member ids; index 0 is the highest priority.
+ * @returns the ordered resolvable channels, plus the member ids that resolve to nothing.
+ */
+export function groupMembers(
+  channels: readonly ResolvedChannel[],
+  members: readonly string[],
+): { ordered: ResolvedChannel[]; dangling: string[] } {
+  const byId = new Map(channels.map((channel) => [channel.id, channel]))
+  const ordered: ResolvedChannel[] = []
+  const dangling: string[] = []
+  for (const id of members) {
+    const channel = byId.get(id)
+    if (channel === undefined) dangling.push(id)
+    else ordered.push(channel)
+  }
+  return { ordered, dangling }
+}
+
+/**
  * Resolve the supply group into an ordered candidate list, highest priority first.
  *
  * ## Why dangling members are SKIPPED rather than fatal
@@ -134,11 +164,9 @@ function selectFromGroup(
   channels: readonly ResolvedChannel[],
   members: readonly string[],
 ): RouteResult {
-  const byId = new Map(channels.map((channel) => [channel.id, channel]))
-  // Keep the CONFIGURED order — it IS the priority — and drop ids nothing resolves to.
-  const resolvable = members.filter((id) => byId.has(id))
+  const { ordered } = groupMembers(channels, members)
 
-  if (resolvable.length === 0) {
+  if (ordered.length === 0) {
     return {
       ok: false,
       failure: {
@@ -150,22 +178,12 @@ function selectFromGroup(
     }
   }
 
-  const [head, ...rest] = resolvable
-  const headChannel = byId.get(head!)
-  if (headChannel === undefined) {
-    // Unreachable: `resolvable` was built from `byId` keys. Kept as a structural guard so a future
-    // edit cannot turn the invariant into a `!` assertion.
-    return {
-      ok: false,
-      failure: { code: 'GROUP_EMPTY', detail: 'the supply group resolved to nothing usable' },
-    }
-  }
-
+  const [head, ...rest] = ordered
   return {
     ok: true,
-    channel: headChannel,
-    source: { kind: 'group', index: 0, of: resolvable.length },
-    alternates: rest.flatMap((id) => byId.get(id) ?? []),
+    channel: head!,
+    source: { kind: 'group', index: 0, of: ordered.length },
+    alternates: rest,
   }
 }
 

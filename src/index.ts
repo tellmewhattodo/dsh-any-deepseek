@@ -299,7 +299,13 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
         const live = channels()
         const known = new Set(live.map((channel) => channel.id))
         const order = members.filter((id) => known.has(id))
-        const serving = status.serving
+        // 🔴 Read THROUGH the selection, not straight off the recorder (2026-11-19). A request can
+        // now be served by a group member while `current` is a plain channel (the out-of-credit
+        // safety net). Reporting `serving` without checking which selection it belongs to would
+        // let a name from BEFORE a selection change render as the live one — the 2026-11-18 defect
+        // one layer down.
+        const selection = current() ?? ''
+        const serving = status.servingUnder(selection)
         // Position is derived from the ORDER, not remembered: 「第 N 位」 must mean "where it sits in
         // the priority list", which is the only position a user can reason about. `-1` = nobody.
         const position = serving === undefined ? -1 : order.indexOf(serving)
@@ -311,6 +317,15 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
           ...serving === undefined ? {} : { serving },
           position,
           exhausted: status.isExhausted,
+          /**
+           * 🔴 Whether the last successful request left the CHOSEN channel for this member.
+           *
+           * With a plain channel selected, the sidebar must say 「没余额，已自动切到供应组 · X」 rather
+           * than naming X as if the user had picked it. Two facts are needed together and neither
+           * is enough alone, so both travel: `servedByFallback` says WHY, `isMember` confirms the
+           * served channel really is one of the group's.
+           */
+          viaFallback: status.servedByFallback && status.isMember(serving),
           ...lastTried === undefined ? {} : { lastTried },
           ...last === undefined ? {} : { lastSwitch: last },
         }

@@ -73,6 +73,20 @@ export interface SupplyState {
    */
   lastTried?: string
   /**
+   * Whether the most recent successful request left the CHOSEN channel for a group member.
+   *
+   * 🔴 Owner request 2026-11-19 gave the group a second job: when a plain-channel selection runs out
+   * of credit, the request falls back into the group (「用到无费用时 自动切换到供应组」). When that
+   * happens `current` is NOT rewritten — writing settings from a request path is a revision bump
+   * mid-request, the「保存时好时坏」shape (decision 85).
+   *
+   * ⇒ This flag is the only thing distinguishing two states that otherwise look identical: "the
+   * user selected a group member" and "the user's channel died and we moved them". It is computed
+   * from two facts together (served-by-fallback AND the served id really is a member), and is
+   * absent — not `false` — when nothing served, so the panel can tell "no" from "not applicable".
+   */
+  viaFallback?: boolean
+  /**
    * The most recent switch, since the process started or since the member list changed.
    *
    * ⚠️ There is no reset any more: every request starts at member 1, so nothing needs clearing.
@@ -155,7 +169,26 @@ export function currentProviderLabel(response: ChannelsResponse | undefined): st
   const channel = response.channels.find((candidate) => candidate.id === id)
   // A dangling selection is a real, fixable problem, so it gets one short word rather than
   // silence — silence would look identical to "nothing configured".
-  return channel === undefined ? '未找到' : channel.label
+  if (channel === undefined) return '未找到'
+
+  // 🔴 The safety net must be VISIBLE (owner request 2026-11-19). The chosen channel is out of
+  // credit and a group member served instead. Printing the CHOSEN channel's label would claim its
+  // account paid; printing the member's label alone would claim the user picked it. Both are
+  // confident wrong answers about where the request went — the 2026-11-18 defect one layer down.
+  //
+  // ⇒ Name the group as the actual supplier AND the member that is talking, and mark it 自动.
+  // `（自动）` is load-bearing: the user did NOT select the group, so without that word this line is
+  // indistinguishable from the 供应组 selection state and "why is it using the group?" has no
+  // answer on screen.
+  if (response.supply?.viaFallback === true) {
+    const member = response.supply.serving
+    const servingChannel = response.channels.find((candidate) => candidate.id === member)
+    // `current` is out of credit, so its own name is the one thing this line must NOT lead with.
+    return servingChannel === undefined
+      ? '供应组（自动）'
+      : `供应组（自动）· ${servingChannel.label}`
+  }
+  return channel.label
 }
 
 /** One aggregate row. Mirrors the ledger's disjoint counting convention. */

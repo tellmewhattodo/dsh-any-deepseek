@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SupplyStatus, canSwitchAttempt } from '../src/failover.js'
-import { selectChannel } from '../src/route.js'
+import { SupplyStatus, canFallBackToGroup, canSwitchAttempt } from '../src/failover.js'
+import { groupMembers, selectChannel } from '../src/route.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import { SUPPLY_GROUP_ID } from '../src/config.js'
 
@@ -42,7 +42,7 @@ function walkOneRequest(
     const answer = answers[channel.id] ?? 'QUOTA'
 
     if (answer === 'ok') {
-      if (fromGroup) status.noteServed(channel.id)
+      status.noteServed(channel.id, SUPPLY_GROUP_ID)
       return tried
     }
 
@@ -77,6 +77,139 @@ function channel(id: string): ResolvedChannel {
 
 const channels = [channel('a'), channel('b'), channel('c')]
 const members = ['a', 'b', 'c']
+
+describe('🔴 the safety net: a plain channel out of credit falls back into the group', () => {
+  /**
+   * One whole request against a PLAIN channel selection, mirroring the adapter's loop.
+   *
+   * This is the same walk as above with one new step between "the chosen channel failed" and
+   * "report the error": if the failure is out-of-credit and the group has anything usable, the
+   * group's members are appended and the ordinary walk continues inside them.
+   * @param current - the channel the user selected.
+   * @param answers - per-channel outcome; missing = `QUOTA`.
+   * @param status - the shared recorder.
+   * @returns the ids attempted, in order.
+   */
+  function walkPlainChannel(
+    current: string,
+    answers: Record<string, 'ok' | string> = {},
+    status = new SupplyStatus(),
+  ): { tried: string[]; served: boolean } {
+    status.bind(members)
+    const selection = selectChannel(channels, current, members)
+    if (!selection.ok) return { tried: [], served: false }
+    const fromGroup = selection.source.kind === 'group'
+    const candidates: ResolvedChannel[] = [selection.channel, ...selection.alternates]
+    const groupFallback = fromGroup
+      ? []
+      : groupMembers(channels, members).ordered.filter((channel) => channel.id !== selection.channel.id)
+    let fellBack = false
+
+    const tried: string[] = []
+    for (let position = 0; position < candidates.length; position++) {
+      const channel = candidates[position]!
+      tried.push(channel.id)
+      const answer = answers[channel.id] ?? 'QUOTA'
+      if (answer === 'ok') {
+        status.noteServed(channel.id, current, fellBack)
+        return { tried, served: true }
+      }
+      const emitted = false
+      if (canSwitchAttempt({ code: answer, emitted, hasNext: position + 1 < candidates.length })) continue
+      if (!fellBack && canFallBackToGroup({
+        code: answer,
+        emitted,
+        selectionIsChannel: !fromGroup,
+        groupCandidates: groupFallback.length,
+      })) {
+        fellBack = true
+        candidates.push(...groupFallback)
+        status.noteSwitch(channel.id, groupFallback[0]!.id, answer, 1000)
+        continue
+      }
+      status.noteFailure(channel.id, position + 1 >= candidates.length)
+      return { tried, served: false }
+    }
+    return { tried, served: false }
+  }
+
+  it('🔴 the owner\'s case: chosen channel out of credit ⇒ served by the group, request does NOT fail', () => {
+    // Owner request 2026-11-19: 「当使用非供应组渠道 用到无费用时 自动切换到供应组。目的是确保 token 供应
+    // 不中断」. Before this, the request simply failed with QUOTA even though three healthy relays
+    // were configured in the group.
+    const status = new SupplyStatus()
+    const result = walkPlainChannel('a', { b: 'ok' }, status)
+    expect(result.tried).toEqual(['a', 'b'])
+    expect(result.served).toBe(true)
+    // The panel must be able to explain WHY: served by a member, while `current` is still 'a'.
+    expect(status.servingUnder('a')).toBe('b')
+    expect(status.servedByFallback).toBe(true)
+    expect(status.isMember('b')).toBe(true)
+    // And the failed attempt is still recorded as a switch, so 「最近切换」 has the real cause.
+    expect(status.lastSwitch).toEqual({ from: 'a', to: 'b', code: 'QUOTA', atMs: 1000 })
+  })
+
+  it('🔴 with nothing in the group, the failure is reported as before — no invented supplier', () => {
+    const status = new SupplyStatus()
+    // `a` is the only channel; the group is empty ⇒ there is nowhere to fall back to.
+    const result = walkOnePlain([channel('a')], 'a', {}, status)
+    expect(result).toEqual(['a'])
+    expect(status.servedByFallback).toBe(false)
+  })
+
+  it('🔴 AUTH and MISSING_CREDENTIAL do NOT trigger the safety net', () => {
+    // The trigger is 「无费用」 (out of credit), not "anything terminal". A dead key is a
+    // configuration error to fix; silently routing around it would hide a typo. Those two stay fatal
+    // for a plain selection, exactly as before this feature.
+    for (const code of ['AUTH', 'INVALID_CREDENTIAL', 'MISSING_CREDENTIAL']) {
+      expect(walkPlainChannel('a', { a: code, b: 'ok' }), code).toEqual({ tried: ['a'], served: false })
+    }
+    // QUOTA does trigger it — that is the whole point.
+    expect(walkPlainChannel('a', { a: 'QUOTA', b: 'ok' }).served).toBe(true)
+  })
+
+  it('🔴 transient codes do NOT trigger it either — the retry layer owns those', () => {
+    // Switching a plain channel on a network blip would throw away a warm prompt cache for a
+    // failure that fixes itself, and would hide a flaky relay behind someone else's bill.
+    for (const code of ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'CONTEXT_WINDOW_EXCEEDED']) {
+      expect(walkPlainChannel('a', { a: code, b: 'ok' }), code).toEqual({ tried: ['a'], served: false })
+    }
+  })
+
+  it('🔴 the failed channel is never re-attempted even when it is also a member', () => {
+    // `current` is often ALSO in the group. Appending the whole member list would spend a guaranteed
+    // second refusal on the same dead account — that is a loop, not "供应不中断".
+    const status = new SupplyStatus()
+    const result = walkPlainChannel('b', {}, status)
+    expect(result.tried.filter((id) => id === 'b')).toHaveLength(1)
+    expect(result.tried).toEqual(['b', 'a', 'c'])
+  })
+
+  it('ignores the group entirely when the group IS the selection', () => {
+    // Two mechanisms on one failure would double-attempt members; the group's own walk owns it.
+    expect(walkPlainChannel(SUPPLY_GROUP_ID, { a: 'ok' })).toEqual({ tried: ['a'], served: true })
+  })
+})
+
+/** Minimal harness for the empty-group case, where there are no fallback candidates at all. */
+function walkOnePlain(
+  only: ResolvedChannel[],
+  current: string,
+  answers: Record<string, string>,
+  status: SupplyStatus,
+): string[] {
+  status.bind([])
+  const selection = selectChannel(only, current, [])
+  if (!selection.ok) return []
+  const selected = selection.channel
+  const answer = answers[selected.id] ?? 'QUOTA'
+  if (answer === 'ok') {
+    status.noteServed(selected.id, current)
+    return [selected.id]
+  }
+  status.noteFailure(selected.id, true)
+  return [selected.id]
+}
 
 describe('🔴 priority order — every request walks 1…n from the first member', () => {
   it('a healthy first member serves alone: nobody else is contacted', () => {

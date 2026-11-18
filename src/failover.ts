@@ -92,6 +92,76 @@ export interface SupplySwitch {
 }
 
 /**
+ * Codes that mean "this account has no credit left", as opposed to any other failure.
+ *
+ * 🔴 Deliberately NARROWER than {@link CHANNEL_UNUSABLE_CODES}, and the difference is the whole
+ * point of the safety net this list serves. Owner request 2026-11-19:
+ * 「当使用非供应组渠道 用到无费用时 自动切换到供应组。目的是确保 token 供应不中断」.
+ *
+ * The trigger is 「无费用」 — out of credit. A dead key (`AUTH`) or a channel whose key was never
+ * configured (`MISSING_CREDENTIAL`) is ALSO terminal, but falling back into the supply group for
+ * those would be answering a question the owner did not ask: a mistyped key is a configuration
+ * error to fix, not a reason to silently route elsewhere, and routing around it would hide it.
+ * Those two are still fatal for a plain channel selection (decision: no silent fallback), so they
+ * stay OUT of this set. If the owner ever wants them in, this comment is where the change starts.
+ */
+const OUT_OF_CREDIT_CODES: ReadonlySet<string> = new Set([
+  'QUOTA',
+  'ACCOUNT_QUOTA',
+])
+
+/** What the adapter knows when deciding whether a dead channel may fall back into the group. */
+export interface FallbackDecisionInput {
+  /** The failure code from the attempt on the DIRECTLY selected channel. */
+  code: string | undefined
+  /**
+   * Whether ANY chunk reached the consumer.
+   *
+   * 🔴 Same load-bearing guard as {@link canSwitchAttempt}, and for the identical reason: once a
+   * chunk is yielded it is in the session and on screen, so continuing on another supplier would
+   * splice two models into one message with no seam.
+   */
+  emitted: boolean
+  /**
+   * Whether `current` names a CHANNEL rather than the supply group.
+   *
+   * ⛔ When the group is already serving, its own walk owns this decision (`canSwitchAttempt`).
+   * Two mechanisms acting on one failure would double-attempt the same member.
+   */
+  selectionIsChannel: boolean
+  /** How many resolvable members the group has, EXCLUDING the channel that just failed. */
+  groupCandidates: number
+}
+
+/**
+ * Whether a plain-channel request may fall back into the supply group.
+ *
+ * ## Why this is a separate decision from the group's own walk
+ *
+ * The group walk answers "which OTHER member serves this request"; this answers "should a request
+ * that was NOT walking the group start walking it, because the chosen channel ran out of money".
+ * They share the emitted guard and the switch set's philosophy, but they differ in the trigger set
+ * (narrower — {@link OUT_OF_CREDIT_CODES}) and in what they must leave alone: this one never
+ * applies when the group is already the selection.
+ *
+ * ⚠️ **It is a per-request decision, not a persisted mode change.** `current` stays what the user
+ * chose. That is not timidity — writing settings from a request path is a revision bump in the
+ * middle of a request, which is the exact shape of the「保存时好时坏」defect (decision 85). The
+ * consequence is stated rather than hidden: while the chosen channel has no credit, EVERY request
+ * pays one wasted quota refusal on it first, then serves from the group. Same price as the priority
+ * order (decision 97), and the same benefit: topping the channel up restores it with no action.
+ * @param input - the four facts the decision depends on.
+ * @returns true only when the fallback is both useful and safe.
+ */
+export function canFallBackToGroup(input: FallbackDecisionInput): boolean {
+  if (input.emitted) return false
+  if (!input.selectionIsChannel) return false
+  if (input.groupCandidates <= 0) return false
+  if (input.code === undefined) return false
+  return OUT_OF_CREDIT_CODES.has(input.code)
+}
+
+/**
  * What the last request did, for the panel only.
  *
  * 🔴 **Nothing here is an input to routing.** The owner's rule is "always start at 1", so a value
@@ -102,6 +172,27 @@ export interface SupplySwitch {
 export class SupplyStatus {
   /** The member that last served successfully. */
   private servedId: string | undefined
+  /**
+   * The `current` value in force when {@link servedId} was recorded.
+   *
+   * 🔴 Why a reading needs its own provenance (2026-11-19). `serving` answers "which channel served
+   * the last successful request", and that is only meaningful against the selection that request
+   * ran under. Without this, a user who switches from a channel to another channel would keep
+   * seeing the previous name rendered as if it were live — the 2026-11-18 wrong-name defect, one
+   * layer down. The panel now reports `serving` ONLY when this still matches the live `current`;
+   * otherwise the reading is stale and saying nothing is the honest answer.
+   */
+  private servedFor: string | undefined
+  /**
+   * Whether the last successful request reached that channel by falling back into the group.
+   *
+   * 🔴 This is the fact that makes the safety net VISIBLE (owner request 2026-11-19). With a plain
+   * channel selected, a request can now be served by a group MEMBER after the chosen channel runs
+   * out of credit. Without this flag the sidebar would print the member's own label as though the
+   * user had selected it — a confident wrong answer about where the request went, which is exactly
+   * the defect of 2026-11-18 one layer down.
+   */
+  private servedViaFallback = false
   /** The last switch, if any since the process started (or since the group was re-read). */
   private switchRecord: SupplySwitch | undefined
   /** Whether the most recent request found no usable member at all. */
@@ -124,14 +215,23 @@ export class SupplyStatus {
     if (signature === this.signature) return
     this.signature = signature
     this.servedId = undefined
+    this.servedFor = undefined
+    this.servedViaFallback = false
     this.switchRecord = undefined
     this.exhausted = false
     this.lastTriedId = undefined
   }
 
-  /** Record that `id` served this request successfully. */
-  noteServed(id: string): void {
+  /**
+   * Record that `id` served this request successfully.
+   * @param id - the channel that actually produced the response.
+   * @param forCurrent - the `current` value this request was routed under.
+   * @param viaFallback - whether it served after a plain-channel selection fell back into the group.
+   */
+  noteServed(id: string, forCurrent: string, viaFallback = false): void {
     this.servedId = id
+    this.servedFor = forCurrent
+    this.servedViaFallback = viaFallback
     this.exhausted = false
     this.lastTriedId = undefined
   }
@@ -153,13 +253,53 @@ export class SupplyStatus {
    */
   noteFailure(lastTried: string | undefined, exhausted: boolean): void {
     this.servedId = undefined
+    this.servedFor = undefined
+    this.servedViaFallback = false
     this.exhausted = exhausted
     this.lastTriedId = lastTried
+  }
+
+  /**
+   * Whether the last successful request reached its supplier by falling back into the group.
+   *
+   * ⛔ Only meaningful together with {@link servingUnder}: a stale reading from before a selection
+   * change must not be reported as a live fallback.
+   */
+  get servedByFallback(): boolean {
+    return this.servedViaFallback
+  }
+
+  /**
+   * Whether the member that last served belongs to the currently bound group list.
+   *
+   * 🔴 This is what makes the safety net VISIBLE (owner request 2026-11-19). With a plain channel
+   * selected, a request can now be served by a group member after the chosen channel runs out of
+   * credit. Saying so requires two facts together — "who served" and "is that one of the group's
+   * members" — and neither alone is enough: the same channel may be both `current` and a member.
+   * @param id - a channel id, typically {@link servingUnder}.
+   * @returns true when `id` is in the bound member list.
+   */
+  isMember(id: string | undefined): boolean {
+    if (id === undefined || this.signature === '') return false
+    return this.signature.split('\u0000').includes(id)
   }
 
   /** The member that last served, or undefined when nothing has served yet / the last request failed. */
   get serving(): string | undefined {
     return this.servedId
+  }
+
+  /**
+   * The member that last served, but only if that reading still applies to `current`.
+   *
+   * 🔴 This is what a reader should use. {@link serving} alone cannot distinguish "this is who is
+   * serving now" from "this is who served before the user changed the selection".
+   * @param current - the live `current` value.
+   * @returns the serving channel id, or undefined when the reading is stale or absent.
+   */
+  servingUnder(current: string | undefined): string | undefined {
+    const live = current ?? ''
+    return this.servedFor === live ? this.servedId : undefined
   }
 
   /** The most recent switch, or undefined when none has happened. */

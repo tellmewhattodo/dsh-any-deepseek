@@ -614,6 +614,24 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     （第 {supply.position + 1} 位）
                   </span>
                 )}
+                {/*
+                  🔴 The safety net, surfaced where it belongs (owner request 2026-11-19: 「当使用非供应组
+                  渠道 用到无费用时 自动切换到供应组」).
+
+                  The group is NOT selected here — the user chose a channel and that channel ran out of
+                  credit, so the group took the request. Rendering this on the GROUP row (rather than on
+                  the dead channel's row) says the two true things at once: the group is what is serving,
+                  and it is serving because something else stopped. `viaFallback` is the server's own
+                  judgement (served-by-fallback AND the served id is a member), so this line cannot
+                  appear for a user who simply picked a member as their channel.
+                */}
+                {!groupSelected && supply?.viaFallback === true && supply.serving !== undefined && (
+                  <span className="ad-rowDetail ad-groupLive ad-groupSwitch">
+                    自动接管中：
+                    <strong>{rows.find((row) => row.id === supply.serving)?.label ?? supply.serving}</strong>
+                    （你选的渠道没余额了；充值后会自动回到它）
+                  </span>
+                )}
                 {groupSelected && supply?.lastSwitch !== undefined && (
                   <span className="ad-rowDetail ad-groupSwitch">
                     最近切换：

@@ -45,7 +45,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ChannelsResponse, StatsResponse } from './panel-api.js'
-import { currentProviderLabel, formatTokens } from './panel-api.js'
+import { SUPPLY_GROUP_ID, currentProviderLabel, formatTokens } from './panel-api.js'
 import './UsageBadge.css'
 
 /**
@@ -349,7 +349,12 @@ export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.
         : (
           <span
             className="ad-usageRow ad-providerRow"
-            title="当前供应商（请求正在走的那个渠道）。最多 15 秒延迟；切换渠道后回到本窗口会立刻重读。"
+            title={
+              channels?.supply?.viaFallback === true && channels.current !== SUPPLY_GROUP_ID
+                ? '当前供应商：你选的渠道没有余额了，请求已自动改由供应组承担。'
+                  + '把那个渠道充值后它会立刻回到使用（不用任何操作）。'
+                : '当前供应商（请求正在走的那个渠道）。最多 15 秒延迟；切换渠道后回到本窗口会立刻重读。'
+            }
           >
             <span className="ad-usageDot ad-providerDot" aria-hidden="true" />
             <span className="ad-providerName">{provider}</span>
