@@ -248,17 +248,21 @@ export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.
    * and that is exactly how the sidebar came to name a supplier that had already been switched away
    * from: the selection is instantaneous, the usage figure is a daily cumulative.
    *
-   * ⚠️ Its failure is swallowed on purpose: a missing channel list must not blank the usage figure
-   * that did arrive (and vice versa — the two never overwrite each other's state).
+   * ⚠️ **A failure keeps the last known name; it does not blank the line.** This is why the loader
+   * is strict (`fetchChannelsStrict`) rather than the lenient `fetchChannels` the panel uses: that
+   * one answers a dead route with an EMPTY list, which has no `current`, which renders as nothing.
+   * At a 15-second cadence the lenient shape would make the line disappear thousands of times a day
+   * — turning the fix into the same class of defect it was written to remove.
    */
   const readProvider = useCallback(async (): Promise<void> => {
     try {
       const response = await loadChannels()
       if (alive.current) setChannels(response)
     } catch {
-      // Leave the last known name on screen: a transient failure must not make the line flicker,
-      // and unlike the figure there is no "unknown" state that would be more honest than the truth
-      // it already has. `currentProviderLabel` handles the genuinely empty cases itself.
+      // Deliberately silent: the last known name stays on screen. Unlike the figure there is no
+      // "unknown" state that would be MORE honest here — a name that was true 15 seconds ago is
+      // still far better than a blank row, and `currentProviderLabel` handles the genuinely empty
+      // configuration cases on its own.
     }
   }, [loadChannels])
 

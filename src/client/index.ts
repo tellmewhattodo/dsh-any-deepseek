@@ -38,6 +38,7 @@ import { UsageBadge, type UsageBadgeInjected } from './UsageBadge.js'
 import {
   fetchBalances,
   fetchChannels,
+  fetchChannelsStrict,
   fetchStats,
   probeChannel,
   type BalanceResponse,
@@ -165,7 +166,12 @@ export function apply(ctx: ClientContext): void {
                   // Same-origin, same route the panel already calls. The provider line needs the
                   // live `current`, which the server reads from the settings document it actually
                   // routes with (owner request 2026-11-03).
-                  loadChannels: (): Promise<ChannelsResponse> => fetchChannels(),
+                  //
+                  // 🔴 STRICT on purpose: this line now polls every 15 seconds, and the lenient
+                  // `fetchChannels` answers a dead route with an empty list — which has no
+                  // `current`, which makes the line vanish. A transient failure must leave the last
+                  // known name on screen, not blank it 5760 times a day (2026-11-18).
+                  loadChannels: (): Promise<ChannelsResponse> => fetchChannelsStrict(),
                 }),
               },
               UsageBadge,

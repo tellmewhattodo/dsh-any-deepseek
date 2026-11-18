@@ -486,6 +486,30 @@ export async function fetchChannels(): Promise<ChannelsResponse> {
 }
 
 /**
+ * Load the channel list, but let a FAILURE be a failure.
+ *
+ * 🔴 Why this exists next to {@link fetchChannels} (2026-11-18): that one answers a dead route with
+ * an empty list, which is the right shape for the PANEL — an empty table is a truthful rendering of
+ * a deployment whose HTTP surface did not come up, and the user is looking right at it.
+ *
+ * For the sidebar's provider line it is the wrong shape. An empty response has no `current`, so
+ * `currentProviderLabel` returns `undefined` and the line DISAPPEARS. At the old 5-minute cadence
+ * that was a rare blink; the line now polls every 15 seconds, so silently accepting "no current"
+ * would turn one transient failure into the line vanishing ~5760 times a day — a 20× increase in
+ * exactly the defect this release is fixing (a line that misdescribes the live supplier).
+ *
+ * ⇒ Same route, opposite contract: this one rejects, so the caller can KEEP the last known name
+ * instead of replacing a true fact with silence.
+ * @returns the response, with `current` guaranteed present in the JSON shape we validate.
+ * @throws when the route is unreachable, non-200, or answers something that is not a channel list.
+ */
+export async function fetchChannelsStrict(): Promise<ChannelsResponse> {
+  const response = await fetch(`${BASE}/channels`, { headers: { accept: 'application/json' } })
+  if (!response.ok) throw new Error(`/channels answered ${response.status}`)
+  return (await response.json()) as ChannelsResponse
+}
+
+/**
  * Load aggregates.
  * @param group - `channel` for the per-relay table, `day` for the timeline.
  * @param from - inclusive ISO lower bound.

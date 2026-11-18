@@ -16,6 +16,8 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   badgeState,
   localDayKey,
@@ -24,7 +26,7 @@ import {
   USAGE_BADGE_LABEL,
   USAGE_BADGE_REFRESH_MS,
 } from '../src/client/UsageBadge.js'
-import type { StatsResponse } from '../src/client/panel-api.js'
+import { currentProviderLabel, type ChannelsResponse, type StatsResponse } from '../src/client/panel-api.js'
 
 /** A stats response with one day row, built so the three input columns are far apart. */
 function statsWith(rows: Array<{ key: string; input: number; cacheRead: number; cacheWrite: number }>): StatsResponse {
@@ -186,6 +188,61 @@ describe('the provider line has its OWN cadence (owner report 2026-11-18)', () =
     // reader trusting this line to be current.
     expect(PROVIDER_REFRESH_MS).toBeLessThanOrEqual(30_000)
     expect(PROVIDER_REFRESH_MS).toBeGreaterThan(0)
+  })
+})
+
+describe('a failed provider read must not blank the line (2026-11-18)', () => {
+  // 🔴 The subtle half of the fix, and the one I nearly shipped wrong.
+  //
+  // The provider line now polls every 15 seconds, i.e. ~5760 times a day. The panel's loader
+  // (`fetchChannels`) answers a dead route with an EMPTY list — correct for a panel, whose user is
+  // looking at an empty table — but an empty list has no `current`, so `currentProviderLabel`
+  // returns `undefined` and the line VANISHES.
+  //
+  // ⇒ At the old cadence that was a rare blink. At the new cadence, accepting the lenient shape
+  // would turn one transient failure into thousands of blank flashes — reintroducing, in a louder
+  // form, the very defect this release exists to remove (a line that misdescribes the live
+  // supplier). The loader used by this seat is strict, so a failure KEEPS the last known name.
+
+  it('🔴 an empty response from the lenient loader WOULD blank the line — hence the strict one', () => {
+    // Stating the hazard as a fact about the pure function, so the choice of loader is justified by
+    // a red-capable assertion rather than by a comment.
+    const empty: ChannelsResponse = { channels: [], presets: [], model: { id: '', name: '' } }
+    expect(currentProviderLabel(empty)).toBeUndefined()
+
+    // And the same shape WITH a current still names it — so the emptiness, not the response, is
+    // what silences the row.
+    expect(currentProviderLabel({ ...empty, current: 'ollama' })).toBe('未找到')
+  })
+
+  it('the strict loader and the lenient one are DIFFERENT contracts on the same route', async () => {
+    // A structural pin: `fetchChannels` must keep swallowing (the panel depends on that), and
+    // `fetchChannelsStrict` must exist and reject. Reading the source is the only honest判据 here —
+    // both hit `/any-deepseek/channels`, so behaviour differs only in the failure path.
+    const api = readFileSync(join(process.cwd(), 'src', 'client', 'panel-api.ts'), 'utf-8')
+    const lenientStart = api.indexOf('export async function fetchChannels(')
+    const strictStart = api.indexOf('export async function fetchChannelsStrict(')
+    // ⚠️ Bounded at BOTH ends. My first version sliced the strict body to end-of-file, so it swept
+    // up every later function's `catch {` and went red for the wrong reason — a judgement that
+    // reports a problem it did not look at is the failure this trajectory keeps re-learning
+    // (decision 50: when something goes red, ask whether the JUDGEMENT is right first).
+    const strictEnd = api.indexOf('export async function fetchStats(', strictStart)
+    expect(lenientStart).toBeGreaterThan(-1)
+    expect(strictStart).toBeGreaterThan(lenientStart)
+    expect(strictEnd).toBeGreaterThan(strictStart)
+    const lenient = api.slice(lenientStart, strictStart)
+    const strict = api.slice(strictStart, strictEnd)
+    expect(lenient).toContain('catch {')
+    expect(lenient).toContain("model: { id: '', name: '' }")
+    // The strict body has NO catch: a failure must reach the caller as a rejection, so the seat can
+    // keep the last known name instead of rendering an empty list as "nothing is selected".
+    expect(strict).not.toContain('catch')
+    expect(strict).toContain('throw new Error')
+
+    // And the sidebar seat must actually use the strict one — a strict loader nobody calls is
+    // decoration (decision 51 in spirit: something a sentence could satisfy is not a judgement).
+    const client = readFileSync(join(process.cwd(), 'src', 'client', 'index.ts'), 'utf-8')
+    expect(client).toContain('fetchChannelsStrict()')
   })
 })
 
