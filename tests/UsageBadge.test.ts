@@ -20,6 +20,7 @@ import {
   badgeState,
   localDayKey,
   pickTodayBillable,
+  PROVIDER_REFRESH_MS,
   USAGE_BADGE_LABEL,
   USAGE_BADGE_REFRESH_MS,
 } from '../src/client/UsageBadge.js'
@@ -150,6 +151,41 @@ describe('owner two presentation demands (2026-11-01)', () => {
     // "value may be 5 minutes stale" — so raising the interval later forces a conscious re-think of
     // what the on-screen number now claims.
     expect(USAGE_BADGE_REFRESH_MS).toBe(5 * 60 * 1000)
+  })
+})
+
+describe('the provider line has its OWN cadence (owner report 2026-11-18)', () => {
+  // 🔴 The defect this pins, verbatim from the owner: 「我设定不用供应组不生效了好像」.
+  //
+  // The switch HAD applied — the ledger proved it within a minute (every request landed on the new
+  // channel). But the sidebar still said 供应组 · <old member>, because the provider line shared the
+  // 5-minute usage timer. The owner read the badge, concluded the setting was ignored, and reported
+  // a routing bug that did not exist.
+  //
+  // ⇒ The lesson is not "poll faster". It is that the two facts have different COSTS and different
+  // KINDS of staleness, and one timer cannot serve both.
+
+  it('🔴 the provider refreshes far more often than the usage figure', () => {
+    // Two orders of magnitude apart, because the costs are: `/stats` reads the whole month's ledger
+    // files, `/channels` reads a settings document. An inequality alone is too weak to catch a
+    // regression to "4 minutes instead of 5", so the value is pinned exactly.
+    expect(PROVIDER_REFRESH_MS).toBe(15_000)
+    expect(PROVIDER_REFRESH_MS * 4).toBeLessThan(USAGE_BADGE_REFRESH_MS)
+  })
+
+  it('🔴 the usage cadence the owner chose is UNCHANGED by this fix', () => {
+    // The owner set 5 minutes on 2026-11-01 for a reason that still holds. Making the provider
+    // fresher must not become a back door to a more expensive ledger poll — that would trade one
+    // unnoticed defect for another.
+    expect(USAGE_BADGE_REFRESH_MS).toBe(300_000)
+  })
+
+  it('the residual staleness is stated, not implied', () => {
+    // "Up to 15 seconds" is the honest promise. A test that only asserted "fast" would let a future
+    // edit claim the line is instant, which it is not — and the whole report above came from a
+    // reader trusting this line to be current.
+    expect(PROVIDER_REFRESH_MS).toBeLessThanOrEqual(30_000)
+    expect(PROVIDER_REFRESH_MS).toBeGreaterThan(0)
   })
 })
 

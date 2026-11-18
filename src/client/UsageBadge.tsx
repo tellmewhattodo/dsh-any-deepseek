@@ -101,6 +101,27 @@ export interface UsageBadgeInjected {
 export const USAGE_BADGE_REFRESH_MS = 300_000
 
 /**
+ * Refresh cadence for the PROVIDER line: **fifteen seconds**.
+ *
+ * 🔴 Owner report (2026-11-18): 「我设定不用供应组不生效了好像」 — the switch HAD taken effect (the ledger
+ * proved it: within a minute the requests were all on the newly chosen channel), but this line still
+ * named the old supplier, because it shares the 5-minute refresh above.
+ *
+ * ⚠️ **Why the two facts cannot share one cadence, stated as the reason the numbers differ**: the
+ * usage figure is expensive — `/stats` reads the whole month's ledger files — and it is a DAILY
+ * cumulative, so a five-minute lag changes it by a rounding error. The provider name is cheap — one
+ * `/channels` read, no ledger — and it is instantaneous: the moment it is wrong, the reader believes
+ * their selection did not apply, which is exactly what happened.
+ *
+ * ⇒ Two facts, two costs, two cadences. Coupling them was the bug; unifying them would only move it.
+ *
+ * 📌 **Residual staleness: up to 15 seconds, and it is real.** Not "instant": say what is true. A
+ * focus / tab-switch also triggers an immediate read, which covers the common "I just changed it,
+ * let me look at the corner" path.
+ */
+export const PROVIDER_REFRESH_MS = 15_000
+
+/**
  * The visible label, in words, so the number is not ambiguous.
  *
  * 🔴 Owner asked for this on 2026-11-01 ("显示的内容多几个字，注明是今日 token 消耗"): a bare
@@ -196,17 +217,9 @@ export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.
   const [channels, setChannels] = useState<ChannelsResponse | undefined>(undefined)
   const alive = useRef(true)
 
-  /** One read of BOTH facts the seat shows. Failures land in `failed`, never in `value`. */
+  /** One read of the usage figure. Failures land in `failed`, never in `value`. */
   const read = useCallback(async (): Promise<void> => {
     const today = localDayKey()
-    // 🔴 The provider is read on the SAME tick as the figure, deliberately. Two independent timers
-    // would let the sidebar show today's usage from one moment beside a provider from another,
-    // which is how a row ends up describing two different configurations. One tick, one snapshot.
-    // Its failure is swallowed on purpose: a missing channel list must not blank the usage figure
-    // that did arrive (opposite failure directions are handled separately below).
-    void loadChannels()
-      .then((response) => { if (alive.current) setChannels(response) })
-      .catch(() => undefined)
     try {
       const stats = await loadToday()
       if (!alive.current) return
@@ -226,20 +239,66 @@ export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.
       if (!alive.current) return
       setFailed(true)
     }
-  }, [loadToday, loadChannels])
+  }, [loadToday])
+
+  /**
+   * One read of the PROVIDER line, on its own faster cadence.
+   *
+   * 🔴 Split from {@link read} on 2026-11-18 (owner report). The two facts used to share one timer
+   * and that is exactly how the sidebar came to name a supplier that had already been switched away
+   * from: the selection is instantaneous, the usage figure is a daily cumulative.
+   *
+   * ⚠️ Its failure is swallowed on purpose: a missing channel list must not blank the usage figure
+   * that did arrive (and vice versa — the two never overwrite each other's state).
+   */
+  const readProvider = useCallback(async (): Promise<void> => {
+    try {
+      const response = await loadChannels()
+      if (alive.current) setChannels(response)
+    } catch {
+      // Leave the last known name on screen: a transient failure must not make the line flicker,
+      // and unlike the figure there is no "unknown" state that would be more honest than the truth
+      // it already has. `currentProviderLabel` handles the genuinely empty cases itself.
+    }
+  }, [loadChannels])
 
   useEffect(() => {
     alive.current = true
     void read()
-    // 🔴 Five minutes (owner, 2026-11-01), not one second: this is a sidebar ornament, and every
-    // tick is a request against a route that reads the whole month's ledger files. A figure that is
-    // at most five minutes stale is worth far more than the extra file reads a faster poll costs.
-    const timer = setInterval(() => { void read() }, USAGE_BADGE_REFRESH_MS)
+    void readProvider()
+    // 🔴 Two timers, deliberately (see PROVIDER_REFRESH_MS): the figure is expensive and cumulative,
+    // the provider name is cheap and instantaneous. A single timer necessarily serves one of them
+    // badly — and it served the provider badly first, which is what the owner saw.
+    const usageTimer = setInterval(() => { void read() }, USAGE_BADGE_REFRESH_MS)
+    const providerTimer = setInterval(() => { void readProvider() }, PROVIDER_REFRESH_MS)
     return () => {
       alive.current = false
-      clearInterval(timer)
+      clearInterval(usageTimer)
+      clearInterval(providerTimer)
     }
-  }, [read])
+  }, [read, readProvider])
+
+  /**
+   * Re-read the provider the moment the tab regains attention.
+   *
+   * 📌 This is the path that actually covers the owner's workflow: switch the channel in Settings,
+   * come back to the conversation, glance at the corner. Waiting up to 15 seconds for a timer would
+   * still look like "the switch did not take" — the same misreading, just shorter.
+   *
+   * ⚠️ It refreshes the PROVIDER only. Re-reading the ledger on every focus would turn a cosmetic
+   * seat into a file-reading poll driven by the user's tab switching.
+   */
+  useEffect(() => {
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') void readProvider()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [readProvider])
 
   // One place decides the state; the markup only renders it. Splitting the judgement across the
   // JSX is how the "unknown renders as 0" defect would sneak back in untested.
@@ -284,7 +343,10 @@ export function UsageBadge({ loadToday, loadChannels }: UsageBadgeProps): React.
       {provider === undefined
         ? null
         : (
-          <span className="ad-usageRow ad-providerRow" title="当前供应商（请求正在走的那个渠道）">
+          <span
+            className="ad-usageRow ad-providerRow"
+            title="当前供应商（请求正在走的那个渠道）。最多 15 秒延迟；切换渠道后回到本窗口会立刻重读。"
+          >
             <span className="ad-usageDot ad-providerDot" aria-hidden="true" />
             <span className="ad-providerName">{provider}</span>
           </span>
