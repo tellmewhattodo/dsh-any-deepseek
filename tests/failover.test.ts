@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { SupplyStatus, canFallBackToGroup, canSwitchAttempt, shouldFailover } from '../src/failover.js'
+import {
+  QuotaCooldown,
+  QUOTA_COOLDOWN_MS,
+  SupplyStatus,
+  canFallBackToGroup,
+  canSwitchAttempt,
+  orderWithCooldowns,
+  shouldCoolDown,
+  shouldFailover,
+} from '../src/failover.js'
 
 describe('shouldFailover — the switch set', () => {
   it('🔴 switches when the channel itself cannot serve', () => {
@@ -112,6 +121,128 @@ describe('canFallBackToGroup — the out-of-credit safety net (2026-11-19)', () 
       expect(canFallBackToGroup({ ...base, code }), code).toBe(false)
     }
     expect(canFallBackToGroup({ ...base, code: undefined })).toBe(false)
+  })
+})
+
+describe('QuotaCooldown — the 30-minute skip (owner 2026-11-19)', () => {
+  // 🔴 Why this exists: with two dry members in front of a healthy one, EVERY request paid two
+  // serial HTTP round-trips (measured 253–964 ms each) before the real attempt — ≈0.55 s of dead
+  // time per request against a 4.6 s first token. The owner chose a bounded skip over "just move
+  // them out of the group", which needs a human to reorder whenever a relay runs dry.
+  //
+  // ⚠️ The distinction from the vetoed sticky cursor (decision 97) is the whole test surface here:
+  // keyed by MEMBER not position, BOUNDED by time, triggered by ONE cause, and VISIBLE.
+
+  it('🔴 the window is exactly the half hour the owner set', () => {
+    // Pinned as a value, not an inequality: "long enough" would also accept 30 hours, and the two
+    // sides of the trade (wasted round-trips vs. how late a top-up is noticed) are both the point.
+    expect(QUOTA_COOLDOWN_MS).toBe(30 * 60 * 1000)
+  })
+
+  it('skips a member it was told about, and stops skipping it when the window ends', () => {
+    const cooling = new QuotaCooldown()
+    cooling.noteQuota('a', 1_000_000)
+    expect([...cooling.coolingIds(1_000_000)]).toEqual(['a'])
+    // One millisecond before the deadline it still skips; at the deadline it does not.
+    expect([...cooling.coolingIds(1_000_000 + QUOTA_COOLDOWN_MS - 1)]).toEqual(['a'])
+    expect([...cooling.coolingIds(1_000_000 + QUOTA_COOLDOWN_MS)]).toEqual([])
+  })
+
+  it('🔴 a good answer CLEARS the skip — a working relay must not stay hidden', () => {
+    // Without this, a member that recovered would be passed over for up to half an hour after it
+    // started working again, and nothing on screen would say why.
+    const cooling = new QuotaCooldown()
+    cooling.noteQuota('a', 1_000_000)
+    cooling.clear('a')
+    expect([...cooling.coolingIds(1_000_001)]).toEqual([])
+  })
+
+  it('🔴 forgets a member that is no longer configured', () => {
+    // Remove-and-re-add is how a user points an id at a different account. An inherited skip would
+    // keep that new account out of use for up to 30 minutes with no reason on screen.
+    const cooling = new QuotaCooldown()
+    cooling.noteQuota('a', 1_000_000)
+    cooling.noteQuota('b', 1_000_000)
+    cooling.bind(['b'])
+    expect([...cooling.coolingIds(1_000_001)]).toEqual(['b'])
+  })
+
+  it('reports the remaining time for the panel, soonest-ending first', () => {
+    // `retryInMs` is a server-side reading so a client with a slow clock cannot misreport it.
+    // ⚠️ Ordering is by REMAINING TIME, not by insertion order: what the reader wants is "which one
+    // comes back first". Here `early` was noted at t=0 and `later` an hour in, so `early` has the
+    // shorter remainder even though it was inserted first.
+    const cooling = new QuotaCooldown()
+    cooling.noteQuota('early', 0)
+    cooling.noteQuota('later', 1_000_000)
+    const active = cooling.active(1_000_000)
+    expect(active.map((entry) => entry.id)).toEqual(['early', 'later'])
+    expect(active[0]!.retryInMs).toBe(QUOTA_COOLDOWN_MS - 1_000_000)
+    expect(active[1]!.retryInMs).toBe(QUOTA_COOLDOWN_MS)
+  })
+
+  it('🔴 an expired entry disappears from the readings too, not just from the walk', () => {
+    // Two readers, one truth: if `active()` kept showing an expired member, the panel would describe
+    // a skip the router had already abandoned — the 2026-11-18 defect one layer down again.
+    const cooling = new QuotaCooldown()
+    cooling.noteQuota('a', 0)
+    expect(cooling.active(QUOTA_COOLDOWN_MS + 1)).toEqual([])
+  })
+})
+
+describe('shouldCoolDown — only "out of credit" earns a skip', () => {
+  it('cooldowns exactly QUOTA and ACCOUNT_QUOTA', () => {
+    expect(shouldCoolDown('QUOTA')).toBe(true)
+    expect(shouldCoolDown('ACCOUNT_QUOTA')).toBe(true)
+  })
+
+  it('🔴 does NOT cooldown a configuration fault — that must keep failing loudly', () => {
+    // AUTH / INVALID_CREDENTIAL / MISSING_CREDENTIAL are terminal too, but skipping them for 30
+    // minutes would dress a mistyped key up as "the group is just using another relay", and the
+    // user would never learn the channel is broken. They re-fail on every request, which is the
+    // signal that gets them fixed.
+    for (const code of ['AUTH', 'INVALID_CREDENTIAL', 'MISSING_CREDENTIAL']) {
+      expect(shouldCoolDown(code), code).toBe(false)
+    }
+  })
+
+  it('does NOT cooldown transient failures — they belong to the retry layer', () => {
+    for (const code of ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE', 'CONTEXT_WINDOW_EXCEEDED', 'ABORTED', 'SOMETHING_NEW']) {
+      expect(shouldCoolDown(code), code).toBe(false)
+    }
+    expect(shouldCoolDown(undefined)).toBe(false)
+  })
+})
+
+describe('orderWithCooldowns — reorder, never remove', () => {
+  const c = (id: string): { id: string } => ({ id })
+
+  it('🔴 with nothing cooling the order is UNCHANGED — the 0.0.35 property', () => {
+    // This is the load-bearing case: the whole skip is an addition, and it must be invisible when
+    // no member is dry. Byte-for-byte the configured order, which is what the owner asked for.
+    const ordered = [c('a'), c('b'), c('c')]
+    expect(orderWithCooldowns(ordered, new Set()).walk.map((x) => x.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('moves cooling members to the BACK, keeping priority among both groups', () => {
+    const ordered = [c('a'), c('b'), c('c'), c('d')]
+    const result = orderWithCooldowns(ordered, new Set(['a', 'c']))
+    expect(result.walk.map((x) => x.id)).toEqual(['b', 'd', 'a', 'c'])
+    expect(result.skipped).toEqual(['a', 'c'])
+  })
+
+  it('🔴 when EVERY member is cooling the order is still complete', () => {
+    // An optimisation that can route to nothing is not an optimisation — it takes the supplier
+    // offline. The walk still contains everyone, in priority order, so a request can still succeed.
+    const ordered = [c('a'), c('b')]
+    const result = orderWithCooldowns(ordered, new Set(['a', 'b']))
+    expect(result.walk.map((x) => x.id)).toEqual(['a', 'b'])
+    expect(result.skipped).toEqual(['a', 'b'])
+  })
+
+  it('a non-member in the cooling set changes nothing', () => {
+    const ordered = [c('a'), c('b')]
+    expect(orderWithCooldowns(ordered, new Set(['ghost'])).walk.map((x) => x.id)).toEqual(['a', 'b'])
   })
 })
 

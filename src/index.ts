@@ -23,7 +23,7 @@ import { PluginConfigSchema, unwrap, unwrapChannels, type PluginConfigValue } fr
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CHANNEL_PRESETS, presetIds } from './presets.js'
 import { allChannels, resolveChannels } from './channels.js'
 import { AnyDeepSeekAdapter, PROVIDER_ID, PROVIDER_NAME, type HarnessImageRef } from './adapter.js'
-import { SupplyStatus } from './failover.js'
+import { SupplyStatus, QuotaCooldown } from './failover.js'
 import { appendLedgerEntry, type LedgerEntry } from './usage-ledger.js'
 import { registerStatsRoutes, type WebServerLike } from './http.js'
 
@@ -176,6 +176,15 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
   const supplyStatus = new SupplyStatus()
 
   /**
+   * The one quota-cooldown map for this plugin instance.
+   *
+   * 🔴 Owner decision 2026-11-19: a member that answers "out of credit" is moved to the BACK of the
+   * walk for 30 minutes instead of being retried first on every request. Measured: two dry members
+   * in front of a healthy one cost ≈0.55 s of dead time per request.
+   */
+  const cooldown = new QuotaCooldown()
+
+  /**
    * The supply group, read fresh each request.
    *
    * `members` is read from the live config (not captured at apply time) for the same reason
@@ -245,6 +254,7 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
     channels,
     current,
     supply,
+    cooldown,
     resolveKey,
     readImage,
     record: makeRecorder(ctx, config),
@@ -311,12 +321,26 @@ export function apply(ctx: Context, config: PluginConfigValue): void {
         const position = serving === undefined ? -1 : order.indexOf(serving)
         const last = status.lastSwitch
         const lastTried = status.lastTried
+        // 🔴 Prune cooldowns against the LIVE member list before reporting them: a member removed
+        // and re-added may point at a different account, and an inherited skip would silently keep
+        // it out of use (see `QuotaCooldown.bind`).
+        cooldown.bind(members)
+        /**
+         * Members currently skipped because they answered "out of credit" within the window.
+         *
+         * 🔴 Owner decision 2026-11-19 (30 minutes). This is the fact that makes the skip honest:
+         * a reordering the user did not ask for must be visible, or the panel would be describing a
+         * priority order the router is not using. `retryInMs` is computed server-side so the reading
+         * does not depend on the browser's clock.
+         */
+        const cooling = cooldown.active(Date.now())
         return {
           members,
           dangling: members.filter((id) => !known.has(id)),
           ...serving === undefined ? {} : { serving },
           position,
           exhausted: status.isExhausted,
+          ...cooling.length === 0 ? {} : { cooling },
           /**
            * 🔴 Whether the last successful request left the CHOSEN channel for this member.
            *

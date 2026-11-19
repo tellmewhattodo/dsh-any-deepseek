@@ -93,6 +93,21 @@ export interface RouteDeps {
     /** The member the last FAILED request gave up on; absent when that request succeeded. */
     lastTried?: string
     /**
+     * Members currently moved to the BACK of the walk because they answered "out of credit".
+     *
+     * 🔴 Owner decision 2026-11-19 (30 minutes). Absent when nothing is cooling — not an empty
+     * array — so "no skips" and "this build has no cooldown" stay distinguishable to an older panel.
+     * `retryInMs` is a server-side reading, so a client with a wrong clock cannot misreport it.
+     */
+    cooling?: Array<{ id: string; retryInMs: number }>
+    /**
+     * Whether the last successful request left the CHOSEN channel for a group member.
+     *
+     * Present only when true: the panel renders 「供应组（自动）· X」 for it, and `false` would be a
+     * fact nobody displays.
+     */
+    viaFallback?: boolean
+    /**
      * The most recent switch, since the process started or since the member list changed.
      *
      * ⚠️ There is nothing to reset: every request starts at member 1, so no cursor exists to clear.

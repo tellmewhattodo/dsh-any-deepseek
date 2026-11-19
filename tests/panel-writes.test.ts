@@ -511,6 +511,26 @@ describe('what the owner reported, pinned as assertions', () => {
     expect(page).toContain('充值后会自动回到它')
   })
 
+  it('🔴 the 30-minute skip is VISIBLE — badge, remaining time, and an unmoved rank', () => {
+    // Owner decision 2026-11-19: a member that answered "out of credit" moves to the back of the
+    // walk for half an hour. 🔴 A silent reordering is the thing this must never be: the list below
+    // shows the user's priority, and the router is deliberately not following it for a while, so the
+    // disagreement has to be on screen or the panel is lying about what it does.
+    //
+    // Three things are pinned, each answering a different question:
+    //  · a per-member badge — "why is #1 not being used?";
+    //  · the remaining minutes — "for how long?" (a word alone leaves the reader guessing);
+    //  · the rank is NOT renumbered — the number still means priority, not trial order.
+    const page = pageSource()
+    expect(page).toContain('ad-groupMemberCooling')
+    expect(page).toContain('跳过中')
+    expect(page).toContain('分钟后重试')
+    expect(page).toContain('supply.cooling')
+    // The rank stays `index + 1` of the CONFIGURED list — if a cooling member were moved, the
+    // numbers would silently become trial order and "priority 1" would stop meaning anything.
+    expect(page).toContain('<span className="ad-groupRank">{index + 1}</span>')
+  })
+
   it('🔴 the group\'s description states the priority rule, not a rotation', () => {
     // The old sentence (「遇到余额不足…自动换下一个」) described what the sticky cursor did. Leaving it
     // would make the panel describe an algorithm that is no longer running — the same class of

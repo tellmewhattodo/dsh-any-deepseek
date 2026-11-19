@@ -642,6 +642,23 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   </span>
                 )}
                 {/*
+                  🔴 Members temporarily moved to the BACK because they answered "out of credit"
+                  (owner decision 2026-11-19, 30 minutes).
+
+                  Why this line is mandatory rather than nice-to-have: the router is deliberately NOT
+                  using the order shown below, and a reader comparing the list against reality would
+                  otherwise conclude the panel is lying. The remaining time is printed because "why is
+                  member 1 not being used?" is answered by a number, not by a word.
+                */}
+                {supply !== undefined && supply.cooling !== undefined && supply.cooling.length > 0 && (
+                  <span className="ad-rowDetail ad-groupSwitch">
+                    暂时跳过：
+                    {supply.cooling
+                      .map((entry) => `${rows.find((row) => row.id === entry.id)?.label ?? entry.id}（${Math.ceil(entry.retryInMs / 60000)} 分钟后重试）`)
+                      .join('、')}
+                  </span>
+                )}
+                {/*
                   Dangling members are LISTED, not silently dropped. The router skips them to stay
                   online, but a member naming a channel that no longer exists is a configuration
                   the user must fix — and a group that quietly shrinks is how "three relays" becomes
@@ -670,10 +687,20 @@ export function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   {members.map((id, index) => {
                     const row = rows.find((candidate) => candidate.id === id)
                     const live = groupSelected && supply?.serving === id
+                    /**
+                     * Whether this member is currently being SKIPPED.
+                     *
+                     * 🔴 Marks the row so the rank number and the actual trial order cannot silently
+                     * disagree: member 1 with a skip badge reads as "priority 1, not being tried
+                     * right now", which is the truth; without the badge the list would claim an order
+                     * the router is not using.
+                     */
+                    const cooling = supply?.cooling?.some((entry) => entry.id === id) === true
                     return (
-                      <li key={id} className={`ad-groupMember${live ? ' ad-groupMemberLive' : ''}`}>
+                      <li key={id} className={`ad-groupMember${live ? ' ad-groupMemberLive' : ''}${cooling ? ' ad-groupMemberCooling' : ''}`}>
                         <span className="ad-groupRank">{index + 1}</span>
                         <span className="ad-groupName">{row?.label ?? `${id}（找不到）`}</span>
+                        {cooling && <span className="ad-groupCoolTag" title="刚报过「余额不足」，暂时排到最后；到点自动恢复原来的位置">跳过中</span>}
                         {/*
                           The ↑/↓ buttons are disabled at the ends rather than hidden: a control
                           that disappears makes the list reflow under the pointer, so the next click

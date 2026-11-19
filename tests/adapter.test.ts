@@ -15,7 +15,7 @@ import {
   type AdapterDeps,
 } from '../src/adapter.js'
 import { ADVERTISED_MODEL_ID, OPENCODE_SESSION_FALLBACK } from '../src/presets.js'
-import { SupplyStatus } from '../src/failover.js'
+import { SupplyStatus, QuotaCooldown } from '../src/failover.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import type { LedgerEntry } from '../src/usage-ledger.js'
 
@@ -28,6 +28,11 @@ import type { LedgerEntry } from '../src/usage-ledger.js'
  */
 function noSupply(): { members: string[]; status: SupplyStatus } {
   return { members: [], status: new SupplyStatus() }
+}
+
+/** A cooldown map that has never been written to — the state most adapter tests run in. */
+function noCooldown(): QuotaCooldown {
+  return new QuotaCooldown()
 }
 
 /** A resolved channel with the fields the adapter reads. */
@@ -241,6 +246,7 @@ describe('listModels — the provider catalog', () => {
     channels: () => [channel()],
     current: () => 'go',
     supply: noSupply,
+    cooldown: noCooldown(),
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -281,6 +287,7 @@ describe('resolveModel — reasoning metadata', () => {
     channels: () => channels,
     current: () => current,
     supply: noSupply,
+    cooldown: noCooldown(),
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -330,6 +337,7 @@ describe('resolveModel — input modalities', () => {
     channels: () => channels,
     current: () => current,
     supply: noSupply,
+    cooldown: noCooldown(),
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -430,6 +438,7 @@ describe('providerRetryPolicy — the retry budget the harness captures at regis
     channels: () => [channel()],
     current: () => 'go',
     supply: noSupply,
+    cooldown: noCooldown(),
     resolveKey: async () => 'sk-test',
     record: async () => undefined,
     now: () => new Date(0),
@@ -490,6 +499,7 @@ describe('AdapterDeps contract', () => {
       channels: () => [channel()],
       current: () => 'go',
       supply: noSupply,
+      cooldown: noCooldown(),
       resolveKey: async () => 'sk-test',
       record: async (entry: LedgerEntry) => { void entry },
       now: () => new Date(),

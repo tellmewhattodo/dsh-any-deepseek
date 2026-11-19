@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { SupplyStatus, canFallBackToGroup, canSwitchAttempt } from '../src/failover.js'
+import {
+  QuotaCooldown,
+  QUOTA_COOLDOWN_MS,
+  SupplyStatus,
+  canFallBackToGroup,
+  canSwitchAttempt,
+  orderWithCooldowns,
+  shouldCoolDown,
+} from '../src/failover.js'
 import { groupMembers, selectChannel } from '../src/route.js'
 import type { ResolvedChannel } from '../src/channels.js'
 import { SUPPLY_GROUP_ID } from '../src/config.js'
@@ -77,6 +85,89 @@ function channel(id: string): ResolvedChannel {
 
 const channels = [channel('a'), channel('b'), channel('c')]
 const members = ['a', 'b', 'c']
+
+describe('🔴 the 30-minute skip changes the WALK, not the configured order', () => {
+  /**
+   * One whole request, with the cooldown map carried between calls.
+   *
+   * This is the integration-level half of the owner's 2026-11-19 decision: the unit cases in
+   * `failover.test.ts` prove the map and the ordering function in isolation; these prove that a
+   * request which pays a quota refusal actually TEACHES the next request to stop paying it.
+   * @param cooldown - the shared map, carried across requests.
+   * @param atMs - the clock for this request.
+   * @returns the ids attempted, in order.
+   */
+  function walkWithCooldown(
+    cooldown: QuotaCooldown,
+    atMs: number,
+    answers: Record<string, 'ok' | string> = {},
+  ): string[] {
+    const cooling = cooldown.coolingIds(atMs)
+    const selection = selectChannel(channels, SUPPLY_GROUP_ID, members)
+    if (!selection.ok) return []
+    const candidates = orderWithCooldowns([selection.channel, ...selection.alternates], cooling).walk
+    const tried: string[] = []
+    for (const channel of candidates) {
+      tried.push(channel.id)
+      const answer = answers[channel.id] ?? 'QUOTA'
+      if (answer === 'ok') {
+        cooldown.clear(channel.id)
+        return tried
+      }
+      if (shouldCoolDown(answer)) cooldown.noteQuota(channel.id, atMs)
+    }
+    return tried
+  }
+
+  it('🔴 the FIRST request pays the toll, every request after it does not', () => {
+    // This is the whole point of the feature. Before it, the toll was paid ~179 times in 30 minutes
+    // on the live host (the ledger showed a:179, b:177, c:175 — a perfect 1:1:1 split, i.e. every
+    // request walking both dry members). After it, exactly once per member per half hour.
+    //
+    // ⚠️ `c` must be given `ok` explicitly: the default answer for an unlisted member is QUOTA, so
+    // leaving it out would make the SECOND request find all three cooling and this assertion would
+    // pass for the wrong reason (my first draft did exactly that).
+    const cooldown = new QuotaCooldown()
+    expect(walkWithCooldown(cooldown, 1_000_000, { c: 'ok' })).toEqual(['a', 'b', 'c'])
+    // The second request reaches the healthy member FIRST: the two dry ones are moved to the back.
+    expect(walkWithCooldown(cooldown, 1_000_001, { c: 'ok' })).toEqual(['c'])
+    expect(walkWithCooldown(cooldown, 1_000_002, { c: 'ok' })).toEqual(['c'])
+  })
+
+  it('🔴 the skip expires by itself — no reset action, no button', () => {
+    // The property the sticky cursor failed (decision 97): recovery must require nothing from the
+    // user. Once the window passes, the configured order is back, including the members that failed.
+    const cooldown = new QuotaCooldown()
+    walkWithCooldown(cooldown, 0, { c: 'ok' })
+    expect(walkWithCooldown(cooldown, QUOTA_COOLDOWN_MS + 1, { c: 'ok' })).toEqual(['a', 'b', 'c'])
+  })
+
+  it('🔴 a member that answers successfully clears its own skip immediately', () => {
+    // A top-up must take effect on the attempt that follows it — not after the full window.
+    // After request 0, `a` and `b` are cooling. Request 1 walks a healthy member FIRST — `c` is
+    // still fresh, so it is tried first and (given `QUOTA`) becomes the third cooling member; then
+    // `a` (topped up) answers ok and is cleared.
+    const cooldown = new QuotaCooldown()
+    walkWithCooldown(cooldown, 0, { c: 'ok' })
+    expect(walkWithCooldown(cooldown, 1, { c: 'QUOTA', a: 'ok' })).toEqual(['c', 'a'])
+    // Now `c` is cooling too — and `a`, having succeeded, is back at the HEAD of the order.
+    expect(walkWithCooldown(cooldown, 2, { a: 'ok' })).toEqual(['a'])
+  })
+
+  it('⛔ a dry member is skipped, never dropped — an all-dry group still walks everyone', () => {
+    // An optimisation that can route to nothing is not an optimisation. If every member is cooling,
+    // the order is still complete and a request can still succeed when one of them recovers.
+    const cooldown = new QuotaCooldown()
+    walkWithCooldown(cooldown, 0, { c: 'ok' })
+    expect(walkWithCooldown(cooldown, 1, { c: 'QUOTA' })).toEqual(['c', 'a', 'b'])
+    // Everything is cooling now; the walk STILL contains all three, in configured order.
+    expect(walkWithCooldown(cooldown, 2, {})).toEqual(['a', 'b', 'c'])
+  })
+
+  it('the configured order is unchanged while nothing is cooling', () => {
+    expect(walkWithCooldown(new QuotaCooldown(), 0, { a: 'ok' })).toEqual(['a'])
+  })
+})
 
 describe('🔴 the safety net: a plain channel out of credit falls back into the group', () => {
   /**

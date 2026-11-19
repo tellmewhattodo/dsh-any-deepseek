@@ -38,6 +38,11 @@ const CHANNEL_UNUSABLE_CODES: ReadonlySet<string> = new Set([
   'MISSING_CREDENTIAL',
 ])
 
+/** The channel shape this module orders; a structural view so no import cycle is needed. */
+interface OrderableChannel {
+  id: string
+}
+
 /**
  * Whether a failed attempt justifies moving to the next group member.
  *
@@ -50,6 +55,168 @@ const CHANNEL_UNUSABLE_CODES: ReadonlySet<string> = new Set([
 export function shouldFailover(code: string | undefined): boolean {
   if (code === undefined) return false
   return CHANNEL_UNUSABLE_CODES.has(code)
+}
+
+/**
+ * How long a member that answered "out of credit" is SKIPPED for.
+ *
+ * 🔴 Owner decision 2026-11-19, after measuring the cost of the pure priority order: two dead
+ * members in front of a healthy one made every request pay two serial HTTP round-trips (measured
+ * 253–964 ms each) before the real attempt, i.e. ≈0.55 s of pure overhead per request on a 4.6 s
+ * first token. Owner chose this design over "just move them out of the group" because that one
+ * needs a human to reorder whenever a relay runs dry or is topped up.
+ *
+ * **Owner set the window: 半小时.** The number is a trade with two sides, and both are stated
+ * rather than hidden:
+ *  · too short ⇒ the wasted round-trip comes back sooner, and a relay that is still dry gets
+ *    re-probed more often than it can possibly recover;
+ *  · too long ⇒ a top-up takes up to this long to be noticed.
+ * 30 minutes is what the owner picked after seeing the measurement.
+ */
+export const QUOTA_COOLDOWN_MS = 30 * 60 * 1000
+
+/**
+ * Per-member, time-bounded skipping of members that just answered "out of credit".
+ *
+ * ## Why this is NOT the sticky cursor that was rejected
+ *
+ * The vetoed design (2026-11-12) was a POSITION: one index, advanced on failure, never expiring,
+ * invisible, and it silently outranked the configured order forever. Recovering from it needed a
+ * manual reset button.
+ *
+ * This is the opposite on every axis:
+ *  · **keyed by member, not by position** — reordering the list changes nothing about who is skipped;
+ *  · **bounded** — {@link QUOTA_COOLDOWN_MS}, then the member is tried again automatically;
+ *  · **triggered by ONE cause** — `QUOTA`/`ACCOUNT_QUOTA` only, so a dead key or a timeout never
+ *    hides a channel;
+ *  · **VISIBLE** — `/channels` reports the skipped ids with their remaining time, and the panel
+ *    shows them.
+ *
+ * And the property the owner cared about is preserved: **the order that remains IS the configured
+ * order**. Skipping is not reordering; when a member comes back it comes back at its own rank.
+ *
+ * ⚠️ In-memory and process-scoped on purpose: a host restart re-probes everything, which is the
+ * honest behaviour when the only thing known about a relay is 30 minutes old.
+ */
+export class QuotaCooldown {
+  /** member id → the instant its cooldown ends (epoch ms). */
+  private until = new Map<string, number>()
+
+  /**
+   * Start (or restart) a cooldown for one member.
+   * @param id - the channel that answered "out of credit".
+   * @param atMs - when the refusal was observed.
+   */
+  noteQuota(id: string, atMs: number): void {
+    this.until.set(id, atMs + QUOTA_COOLDOWN_MS)
+  }
+
+  /**
+   * Forget a member's cooldown because it just served successfully.
+   * @param id - the channel that worked.
+   */
+  clear(id: string): void {
+    this.until.delete(id)
+  }
+
+  /**
+   * The members currently being skipped.
+   *
+   * Pruning happens here rather than on a timer: an expired entry is indistinguishable from no
+   * entry, and a timer would be a second clock that can disagree with the one the request uses.
+   * @param nowMs - current time.
+   * @returns the ids to skip for this request.
+   */
+  coolingIds(nowMs: number): ReadonlySet<string> {
+    const live = new Set<string>()
+    for (const [id, until] of this.until) {
+      if (until > nowMs) live.add(id)
+      else this.until.delete(id)
+    }
+    return live
+  }
+
+  /**
+   * Forget cooldowns for members that are no longer configured.
+   *
+   * A removed-and-re-added member must not inherit an old verdict: the user may well have pointed
+   * the id at a different account in between, and a stale skip would silently keep it out of use.
+   * @param members - the configured member ids.
+   */
+  bind(members: readonly string[]): void {
+    const known = new Set(members)
+    for (const id of [...this.until.keys()]) {
+      if (!known.has(id)) this.until.delete(id)
+    }
+  }
+
+  /**
+   * The skips, for the panel.
+   *
+   * `retryInMs` is computed HERE rather than on the client so the reading does not depend on the
+   * browser's clock — a client 10 minutes slow would otherwise claim a member is still cooling
+   * when the server had already put it back in the walk.
+   * @param nowMs - current time.
+   * @returns one entry per skipped member, soonest-ending first.
+   */
+  active(nowMs: number): Array<{ id: string; retryInMs: number }> {
+    const out: Array<{ id: string; retryInMs: number }> = []
+    for (const [id, until] of this.until) {
+      if (until > nowMs) out.push({ id, retryInMs: until - nowMs })
+      else this.until.delete(id)
+    }
+    return out.sort((a, b) => a.retryInMs - b.retryInMs)
+  }
+}
+
+/** Codes that mean "this account has no credit", the only ones that start a cooldown. */
+export const QUOTA_COOLDOWN_CODES: ReadonlySet<string> = new Set([
+  'QUOTA',
+  'ACCOUNT_QUOTA',
+])
+
+/**
+ * Whether a failure should put its member into a cooldown.
+ *
+ * ⛔ Narrower than {@link CHANNEL_UNUSABLE_CODES} on purpose. `AUTH` / `MISSING_CREDENTIAL` are also
+ * terminal, but they are CONFIGURATION faults: skipping them for 30 minutes would hide a mistyped
+ * key behind a plausible-looking "the group is just using another relay", and the user would never
+ * learn the channel is broken. They keep failing loudly, every request.
+ * @param code - the failure code from the attempt.
+ * @returns true when this failure earns a 30-minute skip.
+ */
+export function shouldCoolDown(code: string | undefined): boolean {
+  if (code === undefined) return false
+  return QUOTA_COOLDOWN_CODES.has(code)
+}
+
+/**
+ * Order the walk for one request: configured priority, minus members in cooldown.
+ *
+ * 🔴 **The cooling members are APPENDED, never dropped.** A group where every member is cooling
+ * would otherwise route to nothing and fail a request that a relay could have served — the cooldown
+ * is an optimisation, and an optimisation that can take the supplier offline is not one. So the
+ * order is "everyone who might work, in priority order; then everyone we suspect, in priority
+ * order". When nothing is cooling this is exactly the configured list, which is the property the
+ * owner asked for.
+ *
+ * ⚠️ A member whose id is not in `ordered` at all (a dangling member) never appears — that is a
+ * separate, already-handled case (`groupMembers` drops it and `/channels` reports it).
+ * @param ordered - resolvable channels, configured priority order.
+ * @param cooling - ids currently being skipped.
+ * @returns the walk order plus which of them are only there as a last resort.
+ */
+export function orderWithCooldowns<T extends OrderableChannel>(
+  ordered: readonly T[],
+  cooling: ReadonlySet<string>,
+): { walk: T[]; skipped: string[] } {
+  const fresh: T[] = []
+  const stale: T[] = []
+  for (const channel of ordered) {
+    if (cooling.has(channel.id)) stale.push(channel)
+    else fresh.push(channel)
+  }
+  return { walk: [...fresh, ...stale], skipped: stale.map((channel) => channel.id) }
 }
 
 /** What the dispatch loop knows when deciding whether to move on. */

@@ -91,6 +91,20 @@ function mount(deps: Partial<RouteDeps> = {}): {
     // Point at a directory that does not exist so the panel's "empty book" branch is exercised
     // without ever touching the real `~/.dsh/any-deepseek` ledger. Tests that need data override it.
     ledgerDir: () => join(tmpdir(), `any-deepseek-http-test-${process.pid}`, 'absent'),
+    /**
+     * A supply projection with NOTHING cooling.
+     *
+     * ⚠️ Deliberately absent from `cooling` rather than present-and-empty: that is the shape the
+     * plugin itself produces when no member is skipped, so the tests exercise the real payload
+     * rather than a typed fiction.
+     */
+    supply: () => ({
+      members: [],
+      dangling: [],
+      position: -1,
+      exhausted: false,
+      viaFallback: false,
+    }),
     ...deps,
   }
 

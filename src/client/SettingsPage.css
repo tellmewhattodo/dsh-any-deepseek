@@ -368,6 +368,23 @@
   border-left-color: var(--ad-active);
 }
 
+/* A member the router is currently passing over because it answered "out of credit"
+   (owner 2026-11-19, 30-minute window). Dimmed, NOT hidden and NOT reordered: the rank number
+   must keep saying "this is your priority 1" while the badge says "not being tried right now". */
+.ad-groupMemberCooling {
+  opacity: 0.6;
+}
+
+.ad-groupCoolTag {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--ad-line);
+  color: #b7791f;
+  white-space: nowrap;
+}
+
 .ad-groupRank {
   flex: none;
   width: 18px;

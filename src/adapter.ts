@@ -57,7 +57,7 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 import { ADVERTISED_MODEL_ID, ADVERTISED_MODEL_NAME, CLIENT_USER_AGENT, OPENCODE_SESSION_FALLBACK, OPENCODE_SESSION_HEADER, V41_FLASH_CAPS, type ChannelApi, type ChannelModality } from './presets.js'
 import type { ResolvedChannel } from './channels.js'
 import { groupMembers, selectChannel, type RouteFailure } from './route.js'
-import { SupplyStatus, canFallBackToGroup, canSwitchAttempt } from './failover.js'
+import { SupplyStatus, canFallBackToGroup, canSwitchAttempt, orderWithCooldowns, shouldCoolDown, type QuotaCooldown } from './failover.js'
 import type { LedgerEntry } from './usage-ledger.js'
 
 /** The single provider route this plugin owns. */
@@ -182,6 +182,15 @@ export interface AdapterDeps {
    * input a routing decision is allowed to depend on.
    */
   supply: () => { members: readonly string[]; status: SupplyStatus }
+  /**
+   * Which members are temporarily skipped, because they answered "out of credit" recently.
+   *
+   * 🔴 Owner decision 2026-11-19 (`QUOTA_COOLDOWN_MS`, 30 minutes). Without it every request paid
+   * two serial quota round-trips before reaching a healthy member. ⚠️ This is an ORDERING input
+   * only — it moves members to the back of one request's walk and never removes one, and it expires
+   * on its own, so the configured priority is still what decides who serves.
+   */
+  cooldown: QuotaCooldown
   /**
    * Resolve a credential REFERENCE name to its value; undefined when unconfigured.
    *
@@ -974,11 +983,29 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
     }
 
     const head = selection.channel
-    /** Mutable on purpose: the safety net appends the group's members mid-request. */
-    const candidates: ResolvedChannel[] = [head, ...selection.alternates]
     // Whether this request is walking the group at all. A plain channel selection has one candidate
     // and no order to record, so switches are display-only there (and there are none).
     const fromGroup = selection.source.kind === 'group'
+
+    /**
+     * The walk order for THIS request.
+     *
+     * 🔴 Owner decision 2026-11-19 (`QUOTA_COOLDOWN_MS` = 30 min). Measured cost of the pure priority
+     * order: two dry members in front of a healthy one made every request pay two serial HTTP
+     * round-trips (253–964 ms each) before the real attempt — ≈0.55 s of dead time per request
+     * against a 4.6 s first token. The owner's instruction was to keep the priority order but stop
+     * paying that toll on every call.
+     *
+     * ⚠️ Members in cooldown are moved to the BACK, never dropped (`orderWithCooldowns`): a group
+     * whose every member is cooling must still route somewhere, or an optimisation has taken the
+     * supplier offline. With nothing cooling this is byte-for-byte the configured order — the exact
+     * property 0.0.35 exists to guarantee.
+     */
+    const cooling = this.deps.cooldown.coolingIds(this.deps.now().getTime())
+    /** Mutable on purpose: the safety net appends the group's members mid-request. */
+    const candidates: ResolvedChannel[] = fromGroup
+      ? orderWithCooldowns([head, ...selection.alternates], cooling).walk
+      : [head]
 
     /**
      * The supply group as an ordered fallback list, prepared BEFORE the first attempt.
@@ -997,8 +1024,11 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
      */
     const groupFallback: readonly ResolvedChannel[] = fromGroup
       ? []
-      : groupMembers(this.deps.channels(), supply.members).ordered
-        .filter((channel) => channel.id !== head.id)
+      : orderWithCooldowns(
+        groupMembers(this.deps.channels(), supply.members).ordered
+          .filter((channel) => channel.id !== head.id),
+        cooling,
+      ).walk
 
     /** Whether the safety net has already fired for this request (it may fire at most once). */
     let fellBack = false
@@ -1147,12 +1177,19 @@ export class AnyDeepSeekAdapter extends LlmAdapter {
       // instead of naming a channel that has no credit left — the exact wrong-name defect of
       // 2026-11-18.
       if (failure === undefined) {
+        // A success CLEARS any cooldown for this member: it is demonstrably serving again, and a
+        // remaining skip would hide a working relay for up to half an hour.
+        this.deps.cooldown.clear(channel.id)
         supply.status.noteServed(channel.id, this.deps.current() ?? '', fellBack)
         return
       }
 
       const code = failure.code
       tried.push({ id: channel.id, label: channel.label, code })
+
+      // 🔴 Start (or restart) the cooldown so the NEXT request does not pay this round-trip again.
+      // Only "out of credit" earns it — see `shouldCoolDown` for why AUTH/MISSING_CREDENTIAL do not.
+      if (shouldCoolDown(code)) this.deps.cooldown.noteQuota(channel.id, this.deps.now().getTime())
 
       const canSwitch = canSwitchAttempt({ code, emitted, hasNext: position + 1 < candidates.length })
 

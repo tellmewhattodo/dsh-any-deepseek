@@ -87,6 +87,14 @@ export interface SupplyState {
    */
   viaFallback?: boolean
   /**
+   * Members currently moved to the BACK of the walk because they answered "out of credit".
+   *
+   * 🔴 Owner decision 2026-11-19 (30 minutes). ⚠️ A reordering the user did not ask for MUST be
+   * visible, or the panel would be describing a priority order the router is not using. Absent when
+   * nothing is cooling — so "no skips" and "this build has no cooldown" stay distinguishable.
+   */
+  cooling?: Array<{ id: string; retryInMs: number }>
+  /**
    * The most recent switch, since the process started or since the member list changed.
    *
    * ⚠️ There is no reset any more: every request starts at member 1, so nothing needs clearing.
