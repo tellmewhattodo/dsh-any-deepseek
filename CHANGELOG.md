@@ -8,6 +8,51 @@
 > （每个 release 提交对应那一版的内容）。正文本身未丢失，只是被并入了上方标题。
 > 工具已修（改为插入 + 集合包含判据），**但历史边界不予臆造回填** —— 猜一个边界比缺一个边界更坏。
 
+## v0.0.40
+
+### 修正分类：OpenCode Go 的 429 订阅额度耗尽 → `QUOTA`，不再是可重试的 `RATE_LIMIT`
+
+owner 报单（附截图）：「opencode go 的 429 需要特殊处理下，这种视为没有余额 无法重试恢复的」。
+
+截图里的真实响应体（逐字）：
+
+```json
+{"type":"GoUsageLimitError","message":"OpenCode Go usage limit reached (weekly, resets in 1d 8h).
+ To keep going now, turn on Extra Usage or upgrade to Go Plus at https://opencode.ai/console/…/go."}
+```
+
+HTTP 状态 429，正文里又有「limit」⇒ 旧规则判成 `RATE_LIMIT`。而 `RATE_LIMIT` 恰好是
+**`0.0.33` 要求宿主重试 100 次**的那一个码。截图正是后果：**「正在重试模型请求 (9/100) ·
+重试延迟 9329 毫秒」** —— 在一个还有 **1 天 8 小时**才恢复的额度上死磕。
+
+#### 一个分类，四处同时修好
+
+| 位置 | 旧行为 | 新行为 |
+|---|---|---|
+| 重试层 | `RATE_LIMIT` ∈ `retryableCodes` ⇒ 重试 100 次 | `QUOTA` ∉ 集合 ⇒ **不重试** |
+| 供应组切换 | 不切（瞬时故障） | **切到下一个成员** |
+| 30 分钟跳过（`0.0.39`） | 不触发（触发集只有 QUOTA） | **触发** |
+| 余额面 | 显示成瞬时波动 | 「余额不足（实测被拒）」 |
+
+⇒ 这也是为什么这个修复只有一处改动：四条下游判据早已按「`QUOTA` = 这家这家结构上不能服务」
+写好了，缺的只是**把这个响应正确归到那一类**。
+
+#### 判据形状：正向关键词，⛔ 不是「含 429」
+
+`usage limit` / `usagelimit` 才表示**额度用完了**；普通突发限流同样是 429 且**值得重试**。
+把「含 429 ⇒ QUOTA」写进去，会让一个健康的渠道因为一次突发就被跳过半小时并全场切走 ——
+比修之前更坏。用例两条都钉住：
+
+- 真实的 `GoUsageLimitError` 正文 ⇒ `QUOTA`；
+- `429 Too Many Requests: rate limit exceeded` ⇒ **仍然是 `RATE_LIMIT`**。
+
+#### 负控制与门禁
+
+把新增那行注释掉 ⇒ 「订阅额度耗尽 ⇒ QUOTA」**精确红 1 条**；`429 突发限流 ⇒ RATE_LIMIT` 那条
+**保持绿**（它防的正是过度归类）。改回后 **417 用例 ✓**。
+
+🔴 **需要重启宿主**（`classifyFailure` 在 `lib/index.js`，node half）。
+
 ## v0.0.39
 
 ### 性能修正：欠费成员**跳过半小时**，不再让每个请求都白撞它（owner 2026-11-19）

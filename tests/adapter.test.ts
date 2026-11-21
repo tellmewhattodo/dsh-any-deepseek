@@ -373,6 +373,44 @@ describe('classifyFailure', () => {
   })
 
   /**
+   * 🔴 A subscription cap delivered as HTTP 429 — owner report 2026-11-22.
+   *
+   * The body is copied VERBATIM from the owner's screenshot:
+   *   `{"type":"GoUsageLimitError","message":"OpenCode Go usage limit reached (weekly, resets in
+   *    1d 8h). To keep going now, turn on Extra Usage or upgrade to Go Plus at …"}`
+   *
+   * It reads like a rate limit (429, and the word 「limit」 appears), so it used to classify as
+   * `RATE_LIMIT` — the ONE code this route asks the harness to retry 100 times. The screenshot shows
+   * the consequence: 「正在重试模型请求 (9/100) · 重试延迟 9329 毫秒」, grinding through a quota that
+   * will not return for a day and eight hours.
+   *
+   * Owner's ruling: 「这种视为没有余额 无法重试恢复的」.
+   */
+  const REAL_GO_USAGE_LIMIT =
+    '429: {"type":"GoUsageLimitError","message":"OpenCode Go usage limit reached (weekly, resets in 1d 8h). '
+    + 'To keep going now, turn on Extra Usage or upgrade to Go Plus at '
+    + 'https://opencode.ai/console/wrk_01KQXPQ17F9TBRCNK78XQ58X74/go."}'
+
+  it('🔴 an OpenCode Go subscription cap is QUOTA, not RATE_LIMIT', () => {
+    // One reclassification, four consequences — all of them the ones the owner asked for:
+    //  1. the retry layer stops retrying it (`QUOTA` is not in `retryableCodes`);
+    //  2. the supply group fails over to the next member;
+    //  3. the group skips this member for 30 minutes;
+    //  4. the balance row reads 「余额不足（实测被拒）」 instead of a transient blip.
+    expect(classifyFailure(message({ stopReason: 'error', errorMessage: REAL_GO_USAGE_LIMIT }))).toBe('QUOTA')
+  })
+
+  it('🔴 …and an ORDINARY 429 burst limit stays RATE_LIMIT', () => {
+    // The mirror image, and the reason the rule is a positive keyword rather than "contains 429".
+    // A burst limit recovers in seconds and IS worth retrying; classifying it as QUOTA would make
+    // the group skip a perfectly good relay for half an hour and fail over on every burst.
+    expect(classifyFailure(message({ errorMessage: '429 Too Many Requests: rate limit exceeded' })))
+      .toBe('RATE_LIMIT')
+    expect(classifyFailure(message({ errorMessage: '429: rate limit reached for gpt-4 on requests per min' })))
+      .toBe('RATE_LIMIT')
+  })
+
+  /**
    * 🔴 The upstream failure that cost real conversations (S142 report, 2026-11-10).
    *
    * A relay answered with a Go HTTP timeout — `context deadline exceeded (Client.Timeout exceeded

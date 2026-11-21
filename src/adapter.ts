@@ -824,6 +824,28 @@ export function classifyFailure(message: AssistantMessage): string {
   if (text.includes('401') || text.includes('403') || text.includes('unauthor') || text.includes('invalid api key')) {
     return 'AUTH'
   }
+  /**
+   * 🔴 A SUBSCRIPTION cap, checked BEFORE the generic rate-limit test.
+   *
+   * Owner report (2026-11-22), with the live body: OpenCode Go answers
+   * `{"type":"GoUsageLimitError","message":"OpenCode Go usage limit reached (weekly, resets in 1d 8h)…"}`
+   * with HTTP 429. It reads like a rate limit (429 + 「limit」), so it used to classify as
+   * `RATE_LIMIT` — and that is the one code this route asks the harness to retry 100 times. The
+   * result was visible in the owner's screenshot: 「正在重试模型请求 (9/100) · 重试延迟 9329 毫秒」,
+   * grinding through a quota that will not come back for a day and eight hours.
+   *
+   * Owner's ruling: 「这种视为没有余额 无法重试恢复的」 ⇒ it is `QUOTA`, not `RATE_LIMIT`. That single
+   * reclassification fixes four things at once, which is why it is worth being precise about:
+   *  · the retry layer stops retrying it (`QUOTA` is not in `retryableCodes`);
+   *  · the supply group fails over to the next member (decision 95's switch set);
+   *  · the group SKIPS this member for 30 minutes (decision 100's cooldown);
+   *  · the balance row reads it as 「余额不足（实测被拒）」 instead of a transient blip.
+   *
+   * ⚠️ Positive keyword only, never "contains 429": an ordinary burst rate limit is also 429 and IS
+   * worth retrying. `usage limit` / `usagelimit` name a spent allowance, which is what makes this
+   * unrecoverable-by-waiting-in-seconds.
+   */
+  if (text.includes('usagelimit') || text.includes('usage limit')) return 'QUOTA'
   if (text.includes('rate') && text.includes('limit')) return 'RATE_LIMIT'
   if (text.includes('quota') || text.includes('balance') || text.includes('credit')) return 'QUOTA'
   // Last, and only on the host's own wording rule — see the note above about what this code
